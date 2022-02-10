@@ -1,0 +1,32 @@
+{
+  "clients":
+  {
+    "rust-analyzer":
+    {
+      "enabled": false,
+      "initializationOptions": {
+        "assist.importMergeBehaviour": "last",
+        "diagnostics.disabled": ["macro-error", "incorrect-ident-case"],
+      },
+    },
+  },
+  "show_code_actions": "",
+  "show_diagnostics_severity_level": 2,
+}
+
+
+[
+  // LSP goto definition
+  { "keys": ["f12"], "command": "lsp_symbol_definition" },
+  {
+    "command": "lsp_code_actions",
+    "keys": ["ctrl+."],
+    "context": [
+      {
+        "key": "lsp.session_with_capability",
+        "operator": "equal",
+        "operand": "codeActionProvider"
+      }
+    ]
+  },
+]
