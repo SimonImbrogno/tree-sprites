@@ -8,7 +8,7 @@ pub struct TileCoordinate {
 
 pub type TileOffset = Vec2<f32>;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug,)]
 pub struct WorldPosition {
     pub coord: TileCoordinate,
     pub offset: TileOffset,

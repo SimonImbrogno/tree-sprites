@@ -1,3 +1,4 @@
+use super::game_state::SoilType;
 use super::tiles::TileType;
 use super::position::WorldPosition;
 
@@ -16,14 +17,14 @@ pub enum TreeSpecies {
 impl TreeSpecies {
     pub fn seed_radius(&self) -> (f32, f32) {
         match self {
-            Self::Ash => (self.crowd_radius(), 3.0),
-            Self::Fir => (self.crowd_radius(), 1.0),
+            Self::Ash => (self.crowd_radius(), 4.5),
+            Self::Fir => (self.crowd_radius(), 1.5),
         }
     }
 
     pub fn crowd_radius(&self) -> f32 {
         match self {
-            Self::Ash => 0.45,
+            Self::Ash => 0.4,
             Self::Fir => 0.3,
         }
     }
@@ -34,9 +35,35 @@ impl TreeSpecies {
             Self::Fir => SeedRate { average: 3.0, variation: 1.0},
         }
     }
+
+    pub fn soil_preference(&self) -> SoilType {
+        match self {
+            Self::Ash => SoilType::Normal,
+            Self::Fir => SoilType::Stony,
+        }
+    }
+
+    pub fn shadow_radius(&self, growth_stage: TreeGrowthStage) -> f32 {
+        match self {
+            Self::Ash => match growth_stage {
+                TreeGrowthStage::Sapling => 0.5,
+                TreeGrowthStage::Mature => 0.8,
+                TreeGrowthStage::Old => 0.7,
+                TreeGrowthStage::Decline => 0.5,
+                _ => 0.0,
+            },
+            Self::Fir => match growth_stage {
+                TreeGrowthStage::Sapling => 0.5,
+                TreeGrowthStage::Mature => 0.6,
+                TreeGrowthStage::Old => 0.5,
+                TreeGrowthStage::Decline => 0.4,
+                _ => 0.0,
+            },
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub enum TreeGrowthStage {
     Sprout,
     Seedling,
@@ -100,9 +127,8 @@ pub struct Tree {
     pub base_growth_speed: f32,
     pub growth_target: Option<f32>,
 
-    // pub seed_fatigue: f32,
     pub seed_timer: f32,
-    pub to_delete: bool,
+    pub shade_factor: f32,
 }
 
 impl Tree {
@@ -120,7 +146,8 @@ impl Tree {
             growth_target: None,
 
             seed_timer: 1.0,
-            to_delete: false,
+
+            shade_factor: 1.0,
         };
 
         result.growth_target = result.growth_required_for_next_stage();

@@ -1,19 +1,30 @@
+#![macro_use]
+
 use std::time::Duration;
 
 mod average_duration_timer;
 mod duration_timer;
 mod target_timer;
-mod target_per_second_timer;
 
 pub use average_duration_timer::AverageDurationTimer;
 pub use duration_timer::DurationTimer;
 pub use target_timer::TargetTimer;
-pub use target_per_second_timer::TargetPerSecondTimer;
 
 pub enum TimerState {
     Pending(Duration),
     Ready(Duration),
 }
+
+// For some reason can't import this directly... need to export it at crate level :|
+macro_rules! measure {
+    ($timer:expr, $code:block) => {
+        $timer.begin_measure();
+        $code
+        $timer.end_measure()
+    }
+}
+
+pub(crate) use measure;
 
 pub trait Timer {
     /// Set the start point for measurement to 'now'.

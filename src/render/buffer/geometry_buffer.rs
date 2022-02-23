@@ -48,14 +48,14 @@ impl<V: Vertex, I: Index> GeometryBuffer<V, I> {
         self.vertex_cache.clear();
     }
 
-    fn debug_assert_capacity(&self, new_vertices: &[V], new_indices: &[I]) {
+    pub fn has_capacity(&self, new_vertices: &[V], new_indices: &[I]) -> bool {
+        let new_vertex_count = self.vertex_cache.len() + new_vertices.len();
+        let new_index_count  = self.index_cache.len()  + new_indices.len();
+
+        let has_vert_cap = new_vertex_count <= self.vertex_capacity;
+        let has_index_cap = new_index_count <= self.index_capacity;
+
         #[cfg(debug_assertions)] {
-            let new_vertex_count = self.vertex_cache.len() + new_vertices.len();
-            let new_index_count  = self.index_cache.len()  + new_indices.len();
-
-            let has_vert_cap = new_vertex_count <= self.vertex_capacity;
-            let has_index_cap = new_index_count <= self.index_capacity;
-
             debug_assert!(
                 has_vert_cap,
                 "Attempting to write vertices to {}B, but capacity only {}B",
@@ -70,24 +70,16 @@ impl<V: Vertex, I: Index> GeometryBuffer<V, I> {
                 self.index_capacity * size_of::<I>()
             );
         }
-    }
-
-    pub fn has_capacity(&self, new_vertices: &[V], new_indices: &[I]) -> bool {
-        let new_vertex_count = self.vertex_cache.len() + new_vertices.len();
-        let new_index_count  = self.index_cache.len()  + new_indices.len();
-
-        let has_vert_cap = new_vertex_count <= self.vertex_capacity;
-        let has_index_cap = new_index_count <= self.index_capacity;
 
         (has_vert_cap && has_index_cap)
     }
 
     pub fn push_geometry(&mut self, new_vertices: &[V], new_indices: &[I]) {
         self.pending_writes = true;
-        self.debug_assert_capacity(new_vertices, new_indices);
-
-        self.vertex_cache.extend(new_vertices);
-        self.index_cache.extend(new_indices);
+        if self.has_capacity(new_vertices, new_indices) {
+            self.vertex_cache.extend(new_vertices);
+            self.index_cache.extend(new_indices);
+        }
     }
 }
 

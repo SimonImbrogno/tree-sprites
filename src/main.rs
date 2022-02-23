@@ -10,9 +10,9 @@ use winit::event::*;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
+mod timer;
 mod render;
 mod game;
-mod timer;
 
 use game::game_state::{GameState, Input};
 use render::RenderState;
@@ -51,8 +51,10 @@ fn process_window_event(event: WindowEvent, render_state: &mut RenderState, inpu
 
                         VirtualKeyCode::P => input_state.pause = !input_state.pause,
                         VirtualKeyCode::G => input_state.show_grid = !input_state.show_grid,
-                        VirtualKeyCode::H => input_state.show_seed = !input_state.show_seed,
+                        VirtualKeyCode::H => input_state.show_dual = !input_state.show_dual,
                         VirtualKeyCode::T => input_state.show_trees = !input_state.show_trees,
+
+                        VirtualKeyCode::R => unsafe { test_new_render = !test_new_render },
 
                         VirtualKeyCode::LControl => input_state.zoom_in  = false,
                         VirtualKeyCode::Space    => input_state.zoom_out = false,
@@ -95,6 +97,8 @@ fn handle_render_result(render_result: RenderResult, render_state: &mut RenderSt
     }
 }
 
+static mut test_new_render: bool = true;
+
 const UPS_TARGET: u64 = 144;
 const FPS_TARGET: u64 = 144;
 
@@ -109,7 +113,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
-    let mut game_state = GameState::new();
+    let mut game_state = Box::new(GameState::new());
     let mut render_state = pollster::block_on(RenderState::new(&window, &game_state));
 
     let mut input = Input::default();
@@ -153,7 +157,7 @@ fn main() {
                     input.dt = update_target_dt;
                     input.t = sim_time;
 
-                    avg_update_timer.measure(|| {
+                    measure!(avg_update_timer, {
                         game_state.update(&input);
                     });
                 }
@@ -162,7 +166,7 @@ fn main() {
                     debug!("+{} updates...", count);
                 }
 
-                avg_render_timer.measure(|| {
+                measure!(avg_render_timer, {
                     let render_result = render_state.try_render(&game_state);
                     handle_render_result(render_result, &mut render_state, &window, control_flow);
                 });

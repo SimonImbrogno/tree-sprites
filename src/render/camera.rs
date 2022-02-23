@@ -15,6 +15,13 @@ impl Camera {
     }
 }
 
+pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.0,
+    0.0, 0.0, 0.5, 1.0,
+);
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
@@ -31,10 +38,18 @@ impl From<Camera> for CameraUniform {
             let right  =  y_radius * src.aspect_ratio + src.position.x;
             let bottom = -y_radius + src.position.y;
             let top    =  y_radius + src.position.y;
-            let near   = -1.0;
+            let near   =  0.0;
             let far    =  1.0;
 
-            cgmath::ortho(left, right, bottom, top, near, far)
+            // _LEFT HANDED_ ortho matrix: (2.0 / (far - near) has been negated vs right handed ortho.
+            let ortho = cgmath::Matrix4::new(
+                2.0 / (right - left),             0.0,                              0.0,                          0.0,
+                0.0,                              2.0 / (top - bottom),             0.0,                          0.0,
+                0.0,                              0.0,                              2.0 / (far - near),           0.0,
+                -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1.0,
+            );
+
+            OPENGL_TO_WGPU_MATRIX * ortho
         };
 
         Self {

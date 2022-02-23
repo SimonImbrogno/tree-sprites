@@ -5,9 +5,10 @@ use anyhow::Result;
 use log::debug;
 use winit::window::Window;
 
-use crate::game::game_state::{self, GameState, GroundCover};
-use crate::game::TileType;
+use crate::game::game_state::{self, GameState, GroundCover, SoilType};
+use crate::game::{TileType, self};
 use crate::timer::{AverageDurationTimer, TargetTimer, TimerState, Timer};
+use crate::timer::measure;
 
 use super::buffer::{QuadBuffer, DrawGeometryBuffer, WriteGeometryBuffer};
 use super::buffer_usages::BufferUsages;
@@ -45,8 +46,8 @@ pub struct RenderState {
 
     //Timers...
     debug_log_timer: TargetTimer,
-    ground_render_timer: Option<AverageDurationTimer<20>>,
-    tree_render_timer: Option<AverageDurationTimer<20>>,
+    ground_render_timer: AverageDurationTimer<20>,
+    tree_render_timer: AverageDurationTimer<20>,
 }
 
 impl RenderState {
@@ -107,7 +108,7 @@ impl RenderState {
 
         debug!("Creating buffers...");
 
-        let buffer_capacity = 10000;
+        let buffer_capacity = 100000;
         let dynamic_quad_buffer = QuadBuffer::new(&device, "render_state.dynamic_quad_buffer", buffer_capacity);
 
         let camera = Camera {
@@ -237,10 +238,9 @@ impl RenderState {
             render_pipeline,
             clear_color: [0.0, 0.0, 0.0],
 
-
             debug_log_timer: TargetTimer::new(Duration::from_secs(1)),
-            ground_render_timer: Some(AverageDurationTimer::new()),
-            tree_render_timer: Some(AverageDurationTimer::new()),
+            ground_render_timer: AverageDurationTimer::new(),
+            tree_render_timer: AverageDurationTimer::new(),
         }
     }
 
@@ -265,28 +265,62 @@ impl RenderState {
         );
 
         let [r, g, b] = self.clear_color;
-        let mut render_pass = encoder.begin_render_pass(
-            &wgpu::RenderPassDescriptor {
-                label: Some("render_state -> render_pass"),
-                color_attachments: &[
-                    wgpu::RenderPassColorAttachment {
-                        view: &output_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
-                            store: true
-                        },
-                    }
-                ],
-                depth_stencil_attachment: None,
-            }
-        );
+        let render_pass_descriptor = wgpu::RenderPassDescriptor {
+            label: Some("render_state -> render_pass"),
+            color_attachments: &[
+                wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                        store: true
+                    },
+                }
+            ],
+            depth_stencil_attachment: None,
+        };
 
         self.camera.update(&game_state.camera, self.window_size);
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(self.camera)]));
 
         self.dynamic_quad_buffer.reset();
 
+        measure!(self.ground_render_timer, {
+            self.draw_ground(game_state);
+        });
+
+        self.draw_debug_grid(game_state);
+
+        measure!(self.tree_render_timer, {
+            self.draw_trees(game_state);
+        });
+
+        let mut render_pass = encoder.begin_render_pass(&render_pass_descriptor);
+
+        self.queue.write_geometry_buffer(&mut self.dynamic_quad_buffer);
+
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
+        render_pass.draw_geometry_buffer(&self.dynamic_quad_buffer);
+
+        drop(render_pass);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        if let TimerState::Ready(_) = self.debug_log_timer.check() {
+            self.debug_log_timer.reset();
+            debug!(
+                "Ground + Trees took : {:?} + {:?}",
+                self.ground_render_timer.average(),
+                self.tree_render_timer.average()
+            );
+        }
+
+        Ok(())
+    }
+
+    fn draw_ground(&mut self, game_state: &GameState) {
         use game_state::GRID_DIM;
         use game_state::TILE_DIM;
         use game_state::TILE_RAD;
@@ -294,71 +328,48 @@ impl RenderState {
         const GRID_DIM_I32: i32 = GRID_DIM as i32;
         const MAX_XY: i32 = GRID_DIM_I32 - 1;
 
-        let mut timer = unsafe { self.ground_render_timer.take().unwrap_unchecked() };
-        timer.measure(|| {
-            //NOTE:
-            //  Because we're rendering the _dual of the grid_, we're (over/under)-iterating and then
-            //  clamping to generate dual nodes for grid cells at the edge (i.e cells without neighbors on all sides).
-            for tile_x in -1..=MAX_XY {
-                for tile_y in -1..=MAX_XY {
+        //NOTE:
+        //  Because we're rendering the _dual of the grid_, we're (over/under)-iterating and then
+        //  clamping to generate dual nodes for grid cells at the edge (i.e cells without neighbors on all sides).
+        for tile_x in -1..=MAX_XY {
+            for tile_y in -1..=MAX_XY {
 
-                    let bl_index = {
-                        let x = tile_x.clamp(0, MAX_XY);
-                        let y = tile_y.clamp(0, MAX_XY);
-                        ((y * GRID_DIM_I32) + x) as usize
-                    };
+                let bl_index = {
+                    let x = tile_x.clamp(0, MAX_XY);
+                    let y = tile_y.clamp(0, MAX_XY);
+                    ((y * GRID_DIM_I32) + x) as usize
+                };
 
-                    let br_index = {
-                        let x = (tile_x + 1).clamp(0, MAX_XY);
-                        let y =  tile_y     .clamp(0, MAX_XY);
-                        ((y * GRID_DIM_I32) + x) as usize
-                    };
+                let br_index = {
+                    let x = (tile_x + 1).clamp(0, MAX_XY);
+                    let y =  tile_y     .clamp(0, MAX_XY);
+                    ((y * GRID_DIM_I32) + x) as usize
+                };
 
-                    let tl_index = {
-                        let x =  tile_x     .clamp(0, MAX_XY);
-                        let y = (tile_y + 1).clamp(0, MAX_XY);
-                        ((y * GRID_DIM_I32) + x) as usize
-                    };
+                let tl_index = {
+                    let x =  tile_x     .clamp(0, MAX_XY);
+                    let y = (tile_y + 1).clamp(0, MAX_XY);
+                    ((y * GRID_DIM_I32) + x) as usize
+                };
 
-                    let tr_index = {
-                        let x = (tile_x + 1).clamp(0, MAX_XY);
-                        let y = (tile_y + 1).clamp(0, MAX_XY);
-                        ((y * GRID_DIM_I32) + x) as usize
-                    };
+                let tr_index = {
+                    let x = (tile_x + 1).clamp(0, MAX_XY);
+                    let y = (tile_y + 1).clamp(0, MAX_XY);
+                    ((y * GRID_DIM_I32) + x) as usize
+                };
 
-                    // SAFETY:
-                    //  Indices are clamped [0, GRID_DIM-1]
-                    let (bl, br, tl, tr) = unsafe {
-                        (
-                            game_state.tiles.get(bl_index).unwrap(),
-                            game_state.tiles.get(br_index).unwrap(),
-                            game_state.tiles.get(tl_index).unwrap(),
-                            game_state.tiles.get(tr_index).unwrap(),
-                        )
-                    };
+                // SAFETY:
+                //  Indices are clamped [0, GRID_DIM-1]
+                let (bl, br, tl, tr) = unsafe {
+                    (
+                        game_state.tiles.get(bl_index).unwrap(),
+                        game_state.tiles.get(br_index).unwrap(),
+                        game_state.tiles.get(tl_index).unwrap(),
+                        game_state.tiles.get(tr_index).unwrap(),
+                    )
+                };
 
-                    //NOTE:
-                    //  Around the edge we just render a half size apron, these are fake "tiles",
-                    //  the grid cells here don't actually have neighbors. Clamping snaps the apron to the edge of the actual grid.
-                    let x = (((tile_x as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
-                    let y = (((tile_y as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
-
-                    let mut dim_x = TILE_DIM;
-                    let mut dim_y = TILE_DIM;
-
-                    if tile_x == -1 || tile_x == MAX_XY { dim_x *= 0.5; }
-                    if tile_y == -1 || tile_y == MAX_XY { dim_y *= 0.5; }
-
-                    let ground_tex_index = self.sprite_sheet.get_texture_index(TileType::Dirt) as i32;
-
-                    let quad = Quad {
-                        pos: (x, y),
-                        dim: (dim_x, dim_y),
-                        tex_index: ground_tex_index,
-                    };
-
-                    self.dynamic_quad_buffer.push_quad(quad);
-
+                let grass_cover = {
                     const GRASS_TILES: [Option<TileType>; 16] = [
                         None,                           //0000
                         Some(TileType::GrassBR),        //0001
@@ -378,38 +389,164 @@ impl RenderState {
                         Some(TileType::Grass),          //1111
                     ];
 
-                    let ground_cover = {
-                        let mut i = 0;
+                    let mut i = 0;
 
-                        if let GroundCover::Grass = tr { i |= 0b1000 }
-                        if let GroundCover::Grass = tl { i |= 0b0100 }
-                        if let GroundCover::Grass = bl { i |= 0b0010 }
-                        if let GroundCover::Grass = br { i |= 0b0001 }
+                    if let GroundCover::Grass = tr.0 { i |= 0b1000 }
+                    if let GroundCover::Grass = tl.0 { i |= 0b0100 }
+                    if let GroundCover::Grass = bl.0 { i |= 0b0010 }
+                    if let GroundCover::Grass = br.0 { i |= 0b0001 }
 
-                        // SAFETY:
-                        //  indices 0000 -> 1111 are saturated.
-                        unsafe { GRASS_TILES.get_unchecked(i) }
+                    // SAFETY:
+                    //  indices 0000 -> 1111 are saturated.
+                    unsafe { GRASS_TILES.get_unchecked(i) }
+                };
+
+                let stone_cover = {
+                    const STONE_TILES: [Option<TileType>; 16] = [
+                        None,                           //0000
+                        Some(TileType::StoneBR),        //0001
+                        Some(TileType::StoneBL),        //0010
+                        Some(TileType::StoneB),         //0011
+                        Some(TileType::StoneTL),        //0100
+                        Some(TileType::StoneDiagDown),  //0101
+                        Some(TileType::StoneL),         //0110
+                        Some(TileType::StoneBTL),       //0111
+                        Some(TileType::StoneTR),        //1000
+                        Some(TileType::StoneR),         //1001
+                        Some(TileType::StoneDiagUp),    //1010
+                        Some(TileType::StoneBTR),       //1011
+                        Some(TileType::StoneT),         //1100
+                        Some(TileType::StoneTBR),       //1101
+                        Some(TileType::StoneTBL),       //1110
+                        Some(TileType::Stone),          //1111
+                    ];
+
+                    let mut i = 0;
+
+                    if let SoilType::Stony = tr.1 { i |= 0b1000 }
+                    if let SoilType::Stony = tl.1 { i |= 0b0100 }
+                    if let SoilType::Stony = bl.1 { i |= 0b0010 }
+                    if let SoilType::Stony = br.1 { i |= 0b0001 }
+
+                    // SAFETY:
+                    //  indices 0000 -> 1111 are saturated.
+                    unsafe { STONE_TILES.get_unchecked(i) }
+                };
+
+                //NOTE:
+                //  Around the edge we just render a half size apron, these are fake "tiles",
+                //  the grid cells here don't actually have neighbors. Clamping snaps the apron to the edge of the actual grid.
+                let x = (((tile_x as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
+                let y = (((tile_y as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
+
+                let mut dim_x = TILE_DIM;
+                let mut dim_y = TILE_DIM;
+
+                if tile_x == -1 || tile_x == MAX_XY { dim_x *= 0.5; }
+                if tile_y == -1 || tile_y == MAX_XY { dim_y *= 0.5; }
+
+
+                if grass_cover.is_none() || grass_cover.unwrap() != TileType::Grass {
+                    let quad = Quad {
+                        pos: (x, y),
+                        dim: (dim_x, dim_y),
+                        tex_index: self.sprite_sheet.get_texture_index(TileType::Dirt) as i32,
                     };
 
-                    if let Some(cover_type) = ground_cover {
-                        let tex_index = self.sprite_sheet.get_texture_index(*cover_type) as i32;
+                    self.dynamic_quad_buffer.push_quad(quad);
+                }
 
-                        let quad = Quad {
-                            pos: (x, y),
-                            dim: (dim_x, dim_y),
-                            tex_index
-                        };
+                if let Some(cover_type) = grass_cover {
+                    let quad = Quad {
+                        pos: (x, y),
+                        dim: (dim_x, dim_y),
+                        tex_index: self.sprite_sheet.get_texture_index(*cover_type) as i32,
+                    };
 
-                        self.dynamic_quad_buffer.push_quad(quad);
-                    }
+                    self.dynamic_quad_buffer.push_quad(quad);
+                }
+
+                if let Some(cover_type) = stone_cover {
+                    let quad = Quad {
+                        pos: (x, y),
+                        dim: (dim_x, dim_y),
+                        tex_index: self.sprite_sheet.get_texture_index(*cover_type) as i32,
+                    };
+
+                    self.dynamic_quad_buffer.push_quad(quad);
                 }
             }
-        });
-        self.ground_render_timer = Some(timer);
+        }
+    }
 
-        // render Dual Grid Lines
-        if game_state.debug.show_grid {
-             for tile_x in -1..=MAX_XY {
+    fn draw_trees(&mut self, game_state: &GameState) {
+        use game_state::GRID_DIM;
+        use game_state::TILE_DIM;
+        use game_state::TILE_RAD;
+
+
+        if !game_state.debug.show_trees { return; }
+
+        //TODO: Memory Arena
+        let mut trees_to_render = Vec::with_capacity(game_state.count_trees);
+
+        for tile_index in 0..game_state::GRID_SIZE {
+            // SAFETY:
+            //  tile index ranges from 0..GRID_SIZE
+            let tree_iter = unsafe { game_state.iter_trees_on_tile_unchecked(tile_index) };
+
+            for tree in tree_iter {
+                let x = (tile_index % GRID_DIM) as f32 * TILE_DIM - (TILE_RAD) + (TILE_DIM * tree.position.offset.x);
+                let y = (tile_index / GRID_DIM) as f32 * TILE_DIM              + (TILE_DIM * tree.position.offset.y);
+
+                let tex_index = self.sprite_sheet.get_texture_index(TileType::from(tree)) as i32;
+                let shadow_radius = tree.species.shadow_radius(tree.stage);
+
+                trees_to_render.push((x, y, tex_index, shadow_radius));
+            }
+        }
+
+        trees_to_render.sort_unstable_by(|(_, a, _, _), (_, b, _, _)| b.partial_cmp(a).unwrap());
+
+        for &(x, y, _, shadow_rad) in trees_to_render.iter() {
+            let dim_x = TILE_DIM * shadow_rad;
+            let dim_y = TILE_DIM * 0.25;
+
+            let pos_x = x + ((1.0 - dim_x) * 0.5);
+            let pos_y = y - (dim_y * 0.5);
+
+            let quad = Quad {
+                pos: (pos_x, pos_y),
+                dim: (dim_x, dim_y),
+                tex_index: self.sprite_sheet.get_texture_index(TileType::TreeShadow) as i32
+            };
+
+            self.dynamic_quad_buffer.push_quad(quad);
+        }
+
+        for &(x, y, tex_index, _) in trees_to_render.iter() {
+            let quad = Quad {
+                pos: (x, y),
+                dim: (TILE_DIM, TILE_DIM),
+                tex_index
+            };
+
+            self.dynamic_quad_buffer.push_quad(quad);
+        }
+    }
+
+    fn draw_debug_grid(&mut self, game_state: &GameState) {
+        use game_state::GRID_DIM;
+        use game_state::TILE_DIM;
+        use game_state::TILE_RAD;
+
+
+        const GRID_DIM_I32: i32 = GRID_DIM as i32;
+        const MAX_XY: i32 = GRID_DIM_I32 - 1;
+
+        if game_state.debug.show_dual {
+            // render Dual Grid Lines
+            for tile_x in -1..=MAX_XY {
                 for tile_y in -1..=MAX_XY {
                     let x = (((tile_x as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
                     let y = (((tile_y as f32) * TILE_DIM) + TILE_RAD).clamp(0.0, (TILE_DIM * GRID_DIM as f32));
@@ -431,113 +568,22 @@ impl RenderState {
             }
         }
 
-        // // render Grid Lines
-        // if game_state.debug.show_grid {
-        //     for tile_x in 0..(GRID_DIM) {
-        //         for tile_y in 0..(GRID_DIM) {
-        //             let x = ((tile_x as f32) * TILE_DIM);
-        //             let y = ((tile_y as f32) * TILE_DIM);
+        if game_state.debug.show_grid {
+            // render Grid Lines
+            for tile_x in 0..(GRID_DIM) {
+                for tile_y in 0..(GRID_DIM) {
+                    let x = ((tile_x as f32) * TILE_DIM);
+                    let y = ((tile_y as f32) * TILE_DIM);
 
-        //             let quad = Quad {
-        //                 pos: (x, y),
-        //                 dim: (TILE_DIM, TILE_DIM),
-        //                 tex_index: (*self.sprite_sheet.index_map.get(&SpriteId::from(TileType::GridLine)).unwrap_or(&0)) as i32,
-        //             };
-
-        //             self.dynamic_quad_buffer.push_quad(quad);
-        //         }
-        //     }
-        // }
-
-        // if game_state.debug.show_tile_shade {
-        //     for tile_x in 0..(GRID_DIM) {
-        //         for tile_y in 0..(GRID_DIM) {
-        //             let x = ((tile_x as f32) * TILE_DIM);
-        //             let y = ((tile_y as f32) * TILE_DIM);
-
-        //             let quad = Quad {
-        //                 pos: (x, y),
-        //                 dim: (TILE_DIM, TILE_DIM),
-        //                 tex_index: (*self.sprite_sheet.index_map.get(&SpriteId::from(TileType::GridLine)).unwrap_or(&0)) as i32,
-        //             };
-
-        //             self.dynamic_quad_buffer.push_quad(quad);
-        //         }
-        //     }
-        // }
-
-
-            if game_state.debug.show_trees {
-                //TODO: Memory Arena
-                let mut trees_to_render = Vec::with_capacity(game_state.count_trees);
-
-                for tile_index in 0..game_state::GRID_SIZE {
-                    // SAFETY:
-                    //  tile index ranges from 0..GRID_SIZE
-                    let tree_iter = unsafe { game_state.iter_trees_on_tile_unchecked(tile_index) };
-
-                    for tree in tree_iter {
-                        let x = (tile_index % game_state::GRID_DIM) as f32 * TILE_DIM - (TILE_DIM * 0.50) + (TILE_DIM * tree.position.offset.x);
-                        let y = (tile_index / game_state::GRID_DIM) as f32 * TILE_DIM                     + (TILE_DIM * tree.position.offset.y);
-
-                        let tex_index = self.sprite_sheet.get_texture_index(TileType::from(tree)) as i32;
-
-                        if game_state.debug.highlight_impending_seed && tree.seed_timer < 0.25 {
-                            let x = (tile_index % game_state::GRID_DIM) as f32 * TILE_DIM - (TILE_DIM * 0.50) + (TILE_DIM * tree.position.offset.x);
-                            let y = (tile_index / game_state::GRID_DIM) as f32 * TILE_DIM - (TILE_DIM * 0.50) + (TILE_DIM * tree.position.offset.y);
-
-                            let tex_index = self.sprite_sheet.get_texture_index(TileType::GridLine) as i32;
-                            trees_to_render.push((x, y, tex_index));
-                        }
-
-                        trees_to_render.push((x, y, tex_index));
-                    }
-                }
-
-        let mut timer = unsafe { self.tree_render_timer.take().unwrap_unchecked() };
-        timer.measure(|| {
-                trees_to_render.sort_unstable_by(|(_, a, _), (_, b, _)| b.partial_cmp(a).unwrap());
-                for (x, y, tex_index) in trees_to_render.into_iter() {
                     let quad = Quad {
                         pos: (x, y),
                         dim: (TILE_DIM, TILE_DIM),
-                        tex_index
+                        tex_index: self.sprite_sheet.get_texture_index(TileType::GridLine) as i32,
                     };
 
                     self.dynamic_quad_buffer.push_quad(quad);
                 }
-        });
-        self.tree_render_timer = Some(timer);
             }
-
-        let quad = Quad {
-            pos: (-TILE_RAD / 2.0, -TILE_RAD / 2.0),
-            dim: (TILE_RAD, TILE_RAD),
-            tex_index: self.sprite_sheet.get_texture_index(TileType::GridLine) as i32,
-        };
-
-        self.dynamic_quad_buffer.push_quad(quad);
-
-        self.queue.write_geometry_buffer(&mut self.dynamic_quad_buffer);
-
-        render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
-        render_pass.draw_geometry_buffer(&self.dynamic_quad_buffer);
-
-        drop(render_pass);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        if let TimerState::Ready(_) = self.debug_log_timer.check() {
-            self.debug_log_timer.reset();
-            debug!(
-                "Ground + Trees took : {:?} + {:?}",
-                self.ground_render_timer.as_ref().unwrap().average(),
-                self.tree_render_timer.as_ref().unwrap().average()
-            );
         }
-
-        Ok(())
     }
 }

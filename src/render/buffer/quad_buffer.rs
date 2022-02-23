@@ -53,6 +53,14 @@ where
         self.buffer.reset();
         self.quad_index = 0;
     }
+
+    pub fn quad_index(&self) -> usize {
+        self.quad_index
+    }
+
+    pub fn set_quad_index(&mut self, new: usize) {
+        self.quad_index = new;
+    }
 }
 
 impl<V, I> WriteGeometryBuffer<QuadBuffer<V, I>, V, I> for wgpu::Queue

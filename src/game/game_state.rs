@@ -1,3 +1,5 @@
+#![macro_use]
+
 use std::ops::{Index, IndexMut};
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
@@ -10,12 +12,14 @@ use rand::Rng;
 use rand::rngs::ThreadRng;
 
 use crate::timer::{AverageDurationTimer, TargetTimer};
+use crate::timer::measure;
 
 use super::tiles::TileType;
 use super::position::{WorldPosition, TileOffset, TileCoordinate};
 use super::trees::{Tree, TreeGrowthStage, TreeSpecies};
+use super::tree_region_iterator::{TreeRegionIterator, TreeRegionIteratorMut};
 
-pub const GRID_DIM: usize = 16;
+pub const GRID_DIM: usize = 20;
 pub const GRID_SIZE: usize = GRID_DIM * GRID_DIM;
 
 pub const TILE_DIM: f32 = 1.0;
@@ -43,6 +47,15 @@ macro_rules! tree_slot_index_xyt {
     }
 }
 
+pub(crate) use tile_index;
+pub(crate) use tree_slot_index;
+pub(crate) use tree_slot_index_xyt;
+
+fn smoothstep(min: f32, max: f32, mut x: f32) -> f32 {
+    x = f32::clamp((x - min) / (max - min), 0.0, 1.0);
+    x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+}
+
 pub struct GameCamera {
     pub position: cgmath::Point3<f32>,
     pub zoom_level: f32,
@@ -54,83 +67,21 @@ pub enum GroundCover {
     Dirt,
 }
 
-struct TreeRegionIterator<'t> {
-    min_x:  usize,
-    min_y:  usize,
-
-    max_x:  usize,
-    max_y:  usize,
-
-    curr_x: usize,
-    curr_y: usize,
-
-    tree_sub_index: usize,
-
-    trees: &'t [Option<Tree>],
-}
-
-impl <'t> TreeRegionIterator<'t> {
-    pub unsafe fn new(min: (usize, usize), max: (usize, usize), trees: &'t [Option<Tree>]) -> Self {
-        debug_assert!(max.0 < GRID_DIM);
-        debug_assert!(max.1 < GRID_DIM);
-        debug_assert!(min.0 <= max.0);
-        debug_assert!(min.1 <= max.1);
-
-        Self {
-            min_x: min.0,
-            min_y: min.1,
-            max_x: max.0,
-            max_y: max.1,
-            curr_x: min.0,
-            curr_y: min.1,
-            tree_sub_index: 0,
-            trees,
-        }
-    }
-}
-
-impl<'t> Iterator for TreeRegionIterator<'t> {
-    type Item = &'t Tree;
-
-    fn next(&mut self) -> Option<Self::Item> {
-
-        while self.curr_y <= self.max_y {
-            // SAFETY:
-            //  curr_x, curr_y are both in range 0..GRID_DIM, tree_sub_index is reset when >= NUM_TREES_PER_TILE
-            let slot_index = tree_slot_index_xyt!(self.curr_x, self.curr_y, self.tree_sub_index);
-            let result = unsafe { self.trees.get_unchecked(slot_index) };
-
-            self.tree_sub_index += 1;
-
-            if self.tree_sub_index >= NUM_TREES_PER_TILE {
-                self.tree_sub_index = 0;
-
-                if self.curr_x == self.max_x {
-                    self.curr_x = self.min_x;
-                    self.curr_y += 1;
-                } else {
-                    self.curr_x += 1;
-                }
-            }
-
-            if result.is_some() {
-                return result.as_ref();
-            }
-        }
-
-        None
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SoilType {
+    Stony,
+    Normal,
 }
 
 pub struct DebugFlags {
     pub show_grid: bool,
+    pub show_dual: bool,
     pub show_trees: bool,
-    pub highlight_impending_seed: bool,
 }
 
 pub struct GameState {
     pub camera: GameCamera,
-    pub tiles: [GroundCover; GRID_SIZE],
+    pub tiles: [(GroundCover, SoilType); GRID_SIZE],
     pub tile_light_amt: [f32; GRID_SIZE],
 
     pub count_trees: usize,
@@ -142,7 +93,7 @@ pub struct GameState {
 
     //Timers...
     debug_log_timer: TargetTimer,
-    perf_timer: Option<AverageDurationTimer<20>>,
+    perf_timer: AverageDurationTimer<20>,
 
     rng: ThreadRng,
     speed: f32,
@@ -165,7 +116,7 @@ impl GameState {
         };
 
         let mut result = Self {
-            tiles: [GroundCover::Grass; GRID_SIZE],
+            tiles: [(GroundCover::Grass, SoilType::Normal); GRID_SIZE],
             tile_light_amt: [0.0; GRID_SIZE],
             count_trees: 0,
             per_tile_tree_count: [0; GRID_SIZE],
@@ -173,13 +124,13 @@ impl GameState {
 
             paused: false,
             debug: DebugFlags {
-                highlight_impending_seed: false,
+                show_dual: false,
                 show_grid: false,
                 show_trees: true,
             },
 
             debug_log_timer: TargetTimer::new(Duration::from_secs(1)),
-            perf_timer: Some(AverageDurationTimer::new()),
+            perf_timer: AverageDurationTimer::new(),
 
             rng,
             speed: 0.005,
@@ -195,11 +146,16 @@ impl GameState {
                 index / GRID_DIM == GRID_DIM -1 ||
                 index % GRID_DIM == GRID_DIM -1
             {
-                *tile = GroundCover::Grass;
+                tile.0 = GroundCover::Grass;
             }
         }
 
-        const NUM_INITIAL_TREES: usize = 6;
+
+        for tile in result.tiles.iter_mut().take(GRID_SIZE / 2) {
+            tile.1 = SoilType::Stony;
+        }
+
+        const NUM_INITIAL_TREES: usize = 30;
         let mut plant_locations = Vec::with_capacity(NUM_INITIAL_TREES);
         for _ in 0..NUM_INITIAL_TREES {
             plant_locations.push(
@@ -213,16 +169,6 @@ impl GameState {
                         y: result.rng.gen_range(0.0..1.0),
                     },
                 }
-                // WorldPosition {
-                //     coord: TileCoordinate {
-                //         x: (GRID_DIM / 2 )as i32,
-                //         y: (GRID_DIM / 2 )as i32,
-                //     },
-                //     offset: TileOffset {
-                //         x: result.rng.gen_range(0.0..1.0),
-                //         y: result.rng.gen_range(0.0..1.0),
-                //     },
-                // }
             );
         }
 
@@ -291,7 +237,7 @@ impl GameState {
     }
 
 
-    pub fn iter_trees_on_tiles_in_radius<'s, 't>(&'s self, pos: WorldPosition, radius: f32) -> impl Iterator<Item=&'t Tree>
+    pub fn iter_trees_in_radius<'s, 't>(&'s self, pos: WorldPosition, radius: f32) -> impl Iterator<Item=(usize, &'t Tree)>
     where
         's: 't
     {
@@ -307,7 +253,32 @@ impl GameState {
 
         // SAEFTY:
         //  Trees min, max have jsut been clamped against bounds
-        unsafe { TreeRegionIterator::new((min_x, min_y), (max_x, max_y), &self.trees) }
+        unsafe {
+            TreeRegionIterator::new((min_x, min_y), (max_x, max_y), &self.trees)
+                .filter(move |t| t.1.position.distance_sq(&pos) <= (radius * radius))
+        }
+    }
+
+    pub fn iter_trees_in_radius_mut<'s, 't>(&'s mut self, pos: WorldPosition, radius: f32) -> impl Iterator<Item=(usize, &'t mut Tree)>
+    where
+        's: 't
+    {
+        let radius_offset = TileOffset { x: radius, y: radius };
+
+        let min = pos - radius_offset;
+        let min_x = i32::max(min.coord.x, 0) as usize;
+        let min_y = i32::max(min.coord.y, 0) as usize;
+
+        let max = pos + radius_offset;
+        let max_x = i32::min(max.coord.x, GRID_DIM as i32 - 1) as usize;
+        let max_y = i32::min(max.coord.y, GRID_DIM as i32 - 1) as usize;
+
+        // SAEFTY:
+        //  Trees min, max have jsut been clamped against bounds
+        unsafe {
+            TreeRegionIteratorMut::new((min_x, min_y), (max_x, max_y), &mut self.trees)
+                .filter(move |t| t.1.position.distance_sq(&pos) <= (radius * radius))
+        }
     }
 
     unsafe fn get_tree_slots_on_tile_unchecked_mut(&mut self, tile_index: usize) -> & mut[Option<Tree>] {
@@ -334,11 +305,11 @@ impl GameState {
         //  We've just checked that x, y are in bounds
         let num_trees_on_tile = unsafe { *(self.per_tile_tree_count.get_unchecked(tile_index)) as usize };
         if num_trees_on_tile < NUM_TREES_PER_TILE {
-            let tree_index = tree_slot_index!(tile_index, num_trees_on_tile);
+            let tree_slot_index = tree_slot_index!(tile_index, num_trees_on_tile);
 
             // SAFETY:
             //  self.num_trees_on_tile assumed to be accurate.
-            let tree_opt = unsafe { self.trees.get_unchecked_mut(tree_index) };
+            let tree_opt = unsafe { self.trees.get_unchecked_mut(tree_slot_index) };
 
             debug_assert!(tree_opt.is_none());
 
@@ -348,63 +319,120 @@ impl GameState {
             //  We've just checked the x, y uset to create tile_index
             unsafe { *(self.per_tile_tree_count.get_unchecked_mut(tile_index)) += 1 };
             self.count_trees += 1;
+
+            self.set_shade_from_surrounding_trees(tree_slot_index);
         }
     }
 
-    //TODO: unsafe delete_tree(tree_slot_index)
-    fn process_pending_tree_deletes(&mut self, pos: TileCoordinate)  {
-        let x = pos.x as usize;
-        let y = pos.y as usize;
+    fn kill_tree(&mut self, tree_slot_index: usize)  {
+        debug_assert!(tree_slot_index < MAX_NUM_TREES);
+        let tree_stage = self.trees.get(tree_slot_index).unwrap().as_ref().unwrap().stage;
 
-        debug_assert!(x < GRID_DIM);
-        debug_assert!(x >= 0);
-        debug_assert!(y < GRID_DIM);
-        debug_assert!(y >= 0);
+        use TreeGrowthStage::*;
+        match tree_stage {
+            Sprout | Seedling => unsafe { self.delete_tree(tree_slot_index) },
+            Sapling => {
+                let tree = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
+                tree.stage = Stump;
+                tree.growth_target = tree.growth_required_for_next_stage();
+            }
+            Mature | Old | Decline => {
+                let tree = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
+                tree.stage = Snag;
+                tree.growth_target = tree.growth_required_for_next_stage();
+            }
+            Snag | Stump => (), // already dead
+        }
+    }
 
-        let tile_index = tile_index!(x, y);
+    /// SAFETY: A group of N calls to this function _MUST_ be followed by a call to pack_trees() otherwise tree iteration invariants are broken. lol
+    unsafe fn delete_tree(&mut self, tree_slot_index: usize)  {
+        debug_assert!(tree_slot_index < MAX_NUM_TREES);
 
-        // Set all pending deletes to None
-        {
-            let mut delete_count = 0;
+        let tile_index = tree_slot_index / NUM_TREES_PER_TILE;
+        let tree_index = tree_slot_index % NUM_TREES_PER_TILE;
 
-            // SAEFTY:
-            //  We've just checked that x, y are in bounds
-            for tree_opt in unsafe { self.get_tree_slots_on_tile_unchecked_mut(tile_index) } {
-                if tree_opt.is_some() && tree_opt.unwrap().to_delete == true {
-                    *tree_opt = None;
-                    delete_count += 1;
-                }
+        let count_trees_on_tile = *(self.per_tile_tree_count.get_unchecked(tile_index)) as usize;
+        debug_assert!(count_trees_on_tile > 0);
+
+        let tree_slots = self.get_tree_slots_on_tile_unchecked_mut(tile_index);
+        *(tree_slots.get_unchecked_mut(tree_index)) = None;
+    }
+
+    /// SAFETY: tile_index must be in bounds
+    unsafe fn pack_trees(&mut self, tile_index: usize)  {
+        let count_trees = *(self.per_tile_tree_count.get_unchecked_mut(tile_index)) as usize;
+
+        let mut read_index = 0;
+        let mut write_index = 0;
+
+        let tree_slots = self.get_tree_slots_on_tile_unchecked_mut(tile_index);
+        while write_index < count_trees && read_index < NUM_TREES_PER_TILE {
+            if read_index != write_index && tree_slots.get(read_index).unwrap().is_some() {
+                tree_slots.swap(read_index, write_index);
             }
 
-            // SAEFTY:
-            //  We've just checked that x, y are in bounds
-            unsafe { *self.per_tile_tree_count.get_unchecked_mut(tile_index) -= delete_count as u8; }
-            self.count_trees -= delete_count;
-        }
-
-        // Pack all living trees to the front of the sub-array
-        {
-            // SAEFTY:
-            //  We've just checked that x, y are in bounds
-            let count_trees = unsafe { *self.per_tile_tree_count.get_unchecked_mut(tile_index) as usize };
-
-            let mut read_index = 0;
-            let mut write_index = 0;
-
-            // SAEFTY:
-            //  We've just checked that x, y are in bounds
-            let tree_slots = unsafe { self.get_tree_slots_on_tile_unchecked_mut(tile_index) };
-            while write_index < count_trees && read_index < NUM_TREES_PER_TILE {
-                if read_index != write_index && tree_slots.get(read_index).unwrap().is_some() {
-                    tree_slots.swap(read_index, write_index);
-                }
-
-                read_index += 1;
-                if tree_slots.get(write_index).unwrap().is_some() {
-                    write_index += 1;
-                }
+            read_index += 1;
+            if tree_slots.get(write_index).unwrap().is_some() {
+                write_index += 1;
             }
         }
+
+        *(self.per_tile_tree_count.get_unchecked_mut(tile_index)) = write_index as u8;
+    }
+
+    pub fn set_shade_from_surrounding_trees(&mut self, tree_slot_index: usize) {
+        let (tree_pos, tree_stage) = {
+            let t_ref = self.trees.get(tree_slot_index).unwrap().as_ref().unwrap();
+            (t_ref.position, t_ref.stage)
+        };
+
+        let mut shade_factor = 1.0;
+        let radius = 1.0; //Something big... No tree is gonna be 2 tiles wide... probably.
+
+        for (near_tree_index, near_tree) in self.iter_trees_in_radius(tree_pos, radius) {
+            if near_tree_index == tree_slot_index { continue; } // Skip the tree we're updating.
+
+            let near_tree_shad_rad = near_tree.species.shadow_radius(near_tree.stage);
+            let distance = tree_pos.distance(&near_tree.position);
+
+            if near_tree_shad_rad <= 0.0     { continue; } // 0 causes undesirable flipping with smoothstep, negative radius should be impossible.
+            if distance <= near_tree_shad_rad {
+                shade_factor *= (1.0 - smoothstep(near_tree_shad_rad, 0.0, distance));
+            } // Tree is too far to cast shade.
+        }
+
+        let t_ref_mut = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
+        t_ref_mut.shade_factor = shade_factor;
+    }
+
+    pub fn update_shade_for_surrounding_trees(&mut self, tree_slot_index: usize, previous_stage: TreeGrowthStage) {
+        let t_ref = self.trees.get(tree_slot_index).unwrap().as_ref().unwrap();
+        let tree_pos = t_ref.position;
+        let tree_species = t_ref.species;
+        let tree_stage = t_ref.stage;
+        let mut shade_factor = t_ref.shade_factor;
+
+        let old_shadow_radius = tree_species.shadow_radius(previous_stage);
+        let new_shadow_radius = tree_species.shadow_radius(tree_stage);
+        let max_shadow_radius = f32::max(old_shadow_radius, new_shadow_radius);
+
+        for (tree_slot, near_tree) in self.iter_trees_in_radius_mut(tree_pos, max_shadow_radius) {
+            if tree_slot == tree_slot_index { continue; }
+
+            let distance = tree_pos.distance(&near_tree.position);
+
+            if distance <= old_shadow_radius && old_shadow_radius > 0.0 {
+                shade_factor /= (1.0 - smoothstep(new_shadow_radius, 0.0, distance));
+            }
+
+            if distance <= new_shadow_radius && new_shadow_radius > 0.0 {
+                shade_factor *= (1.0 - smoothstep(new_shadow_radius, 0.0, distance));
+            }
+        }
+
+        let t_ref_mut = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
+        t_ref_mut.shade_factor = shade_factor;
     }
 
     pub fn update(&mut self, input: &Input) {
@@ -428,20 +456,17 @@ impl GameState {
         let dt_s = input.dt.as_secs_f32();
 
         self.debug.show_grid = input.show_grid;
+        self.debug.show_dual = input.show_dual;
         self.debug.show_trees = input.show_trees;
-        self.debug.highlight_impending_seed = input.show_seed;
 
         self.paused = input.pause;
         if self.paused { return; }
 
         self.update_trees(dt_s);
 
-        //Janky workaround for borrow check
-        let mut timer = unsafe { self.perf_timer.take().unwrap_unchecked() };
-        timer.measure(|| {
+        measure!(self.perf_timer, {
             self.update_grass();
         });
-        self.perf_timer = Some(timer);
 
         self.one_sec_sin = f32::sin(dt_s);
 
@@ -452,26 +477,25 @@ impl GameState {
     }
 
     fn update_trees(&mut self, dt_s: f32) {
-        let mut count_plant_events = 0;
-        let mut count_pending_deletes = 0;
+        const MAX_NUM_EVENTS: usize = GRID_SIZE * NUM_TREES_PER_TILE;
 
-        let mut plant_events = [MaybeUninit::uninit(); 100];
-        let mut pending_deletes = [MaybeUninit::uninit(); 100];
+        let mut count_events = 0;
+        let mut tree_events = [MaybeUninit::uninit(); MAX_NUM_EVENTS];
 
-        let mut push_new_tree_pos = |plant_event| {
-            plant_events.get_mut(count_plant_events).unwrap().write(plant_event);
-            count_plant_events += 1;
-        };
+        #[derive(Copy, Clone, Debug)]
+        enum Event {
+            Plant { pos: WorldPosition, species: TreeSpecies },
+            Kill { tree_slot_index: usize },
+            Delete { tree_slot_index: usize }
+        }
 
-        let mut push_new_tree_delete = |pos| {
-            pending_deletes.get_mut(count_pending_deletes).unwrap().write(pos);
-            count_pending_deletes += 1;
-        };
-
-        #[derive(Copy, Clone)]
-        struct PlantEvent {
-            pos: WorldPosition,
-            species: TreeSpecies,
+        macro_rules! push_event {
+            ($e:expr) => {
+                if count_events < MAX_NUM_EVENTS {
+                    tree_events.get_mut(count_events).unwrap().write($e);
+                    count_events += 1;
+                }
+            };
         }
 
         let mut tile_index = 0;
@@ -482,20 +506,46 @@ impl GameState {
                 *(unsafe { self.per_tile_tree_count.get_unchecked(tile_index) }) as usize
             };
 
+            // SAFETY:
+            //  tile_index ranging from 0..GRID_SIZE.
+            let soil_type = unsafe { self.tiles.get_unchecked(tile_index).1 };
+
             let mut tree_index = 0;
             while tree_index < num_trees_on_tile {
-                let index = tree_slot_index!(tile_index, tree_index);
+                let slot_index = tree_slot_index!(tile_index, tree_index);
 
                 // SAFETY:
                 //  index is constructed by tile_index (see above) incremented by tree_index.
                 //  tree_index must be < num_trees_on_tile
-                let tree = unsafe { self.trees.get_unchecked_mut(index).as_mut().unwrap_unchecked() };
-                let grow_stage = tree.grow(dt_s);
+                let tree = unsafe { self.trees.get_unchecked_mut(slot_index).as_mut().unwrap_unchecked() };
+
+                let soil_multiplier = if soil_type == tree.species.soil_preference() { 1.0 } else { 0.4 };
+
+                //Kill the tree if it's not getting enough oomph.
+                let growth_multiplier = 1.0 * tree.shade_factor * soil_multiplier;
+                if growth_multiplier <= 0.05 {
+                    push_event!(Event::Kill { tree_slot_index: slot_index });
+                    tree_index += 1;
+                    continue;
+                };
+
+                let old_grow_stage = tree.stage;
+                let new_grow_stage = tree.grow(dt_s * growth_multiplier);
+                drop(tree);
+
+                if (old_grow_stage != new_grow_stage) {
+                    self.update_shade_for_surrounding_trees(slot_index, old_grow_stage);
+                }
+
+                // SAFETY:
+                //  index is constructed by tile_index (see above) incremented by tree_index.
+                //  tree_index must be < num_trees_on_tile
+                let tree = unsafe { self.trees.get_unchecked_mut(slot_index).as_mut().unwrap_unchecked() };
 
                 use TreeGrowthStage::*;
-                match grow_stage {
+                match new_grow_stage {
                     Mature | Old | Decline => {
-                        let seed_multiplier = match grow_stage {
+                        let seed_multiplier = match new_grow_stage {
                             Mature  => 1.0,
                             Old     => 0.5,
                             Decline => 0.2,
@@ -504,7 +554,8 @@ impl GameState {
 
                         if tree.seed_timer <= 0.0 {
                             let numerator = 1;
-                            let denominator = (10.0 * (1.0 / seed_multiplier)) as u32;
+                            let mut denominator = (10.0 * (1.0 / seed_multiplier)) as u32;
+                            if soil_type != tree.species.soil_preference() { denominator *= 2; }
 
                             for _ in 0..3 {
                                 if self.rng.gen_ratio(numerator, denominator) {
@@ -525,8 +576,8 @@ impl GameState {
                                     if plant_position.coord.x < GRID_DIM as i32 && plant_position.coord.x >= 0 &&
                                        plant_position.coord.y < GRID_DIM as i32 && plant_position.coord.y >= 0
                                     {
-                                        push_new_tree_pos(
-                                            PlantEvent {
+                                        push_event!(
+                                            Event::Plant {
                                                 pos: plant_position,
                                                 species: tree.species,
                                             }
@@ -546,8 +597,7 @@ impl GameState {
                     },
                     Stump => {
                         if self.rng.gen_ratio(1, 1000) {
-                            tree.to_delete = true;
-                            push_new_tree_delete(tree.position.coord);
+                            push_event!(Event::Delete { tree_slot_index: slot_index });
                         }
                     },
                     _ => {}
@@ -559,37 +609,39 @@ impl GameState {
             tile_index += 1;
         }
 
-        // NOTE:
-        //  Only checking the crowd radius of the _PLANTED_ tree.
-        //  i.e a tree with a large crowd radius will not prevent being "crowded" by tigher packing plants.
-        for index in 0..count_plant_events {
+        let mut tiles_to_repack = std::collections::HashSet::<usize>::new();
+
+        for index in 0..count_events {
             // SAFETY:
-            //  count_plant_events was used to write the values, now upper bound for iteration.
-            let PlantEvent { pos, species } = unsafe { plant_events.get_unchecked(index).assume_init() };
-            let (crowd_radius, _) = species.seed_radius();
-            let crowd_radius_sq = crowd_radius * crowd_radius;
+            //  count_events was used to write the values, now upper bound for iteration.
+            let event = unsafe { tree_events.get_unchecked(index).assume_init() };
 
-            let clear_to_plant = self
-                .iter_trees_on_tiles_in_radius(pos, crowd_radius)
-                .all(|t| pos.distance_sq(&t.position) >= crowd_radius_sq);
-
-            if clear_to_plant {
-                self.plant_tree(pos, species);
+            match event {
+                Event::Plant { pos, species } => self.plant_tree(pos, species),
+                Event::Kill { tree_slot_index } => {
+                    // Not strictly necessary, but we don't know if kill_tree() is going to delete a tree.
+                    tiles_to_repack.insert(tree_slot_index / NUM_TREES_PER_TILE);
+                    self.kill_tree(tree_slot_index);
+                },
+                Event::Delete { tree_slot_index } => {
+                    tiles_to_repack.insert(tree_slot_index / NUM_TREES_PER_TILE);
+                    // SAFETY:
+                    //  tree_slot_index comes directly from iteration index when updating trees above.
+                    unsafe { self.delete_tree(tree_slot_index) }
+                },
             }
         }
 
-        if count_pending_deletes > 0 {
-            for index in 0..count_pending_deletes {
-                // SAFETY:
-                //  count_pending_deletes was used to write the values, now upper bound for iteration.
-                let tile_pos = unsafe { pending_deletes.get_unchecked(index).assume_init() };
-                self.process_pending_tree_deletes(tile_pos);
-            }
+        for tile_index in tiles_to_repack {
+            // SAFETY:
+            //  tile_index was created from tree_slot_index in previous loop.
+            //  tree_slot_index comes directly from iteration index when updating trees above.
+            unsafe { self.pack_trees(tile_index) };
         }
     }
 
     fn update_grass(&mut self) {
-        let mut new_grass_state: [GroundCover; GRID_SIZE] = self.tiles;
+        let mut new_grass_state: [(GroundCover, SoilType); GRID_SIZE] = self.tiles;
 
         for x in 0..(GRID_DIM as i32) {
             for y in 0..(GRID_DIM as i32) {
@@ -621,12 +673,12 @@ impl GameState {
                     // SAFETY:
                     //  tile_index constructed from : x, y ranging from 0..GRID_DIM
                     unsafe {
-                        *(new_grass_state.get_unchecked_mut(tile_index)) = GroundCover::Dirt;
+                        new_grass_state.get_unchecked_mut(tile_index).0 = GroundCover::Dirt;
                     }
                 } else {
                     // SAFETY:
                     //  tile_index constructed from : x, y ranging from 0..GRID_DIM
-                    if let GroundCover::Dirt = unsafe { self.tiles.get_unchecked(tile_index) } {
+                    if let (GroundCover::Dirt, _) = unsafe { self.tiles.get_unchecked(tile_index) } {
                         for neighbor_x in (x-1)..=(x+1) {
                             for neighbor_y in (y-1)..=(y+1) {
                                 if neighbor_x == neighbor_y { continue; }
@@ -636,7 +688,7 @@ impl GameState {
                                     (neighbor_y >= 0) && (neighbor_y < GRID_DIM as i32)
                                 {
                                     let neighbor_index = tile_index!(neighbor_x, neighbor_y);
-                                    if let GroundCover::Grass = self.tiles.get(neighbor_index).unwrap() {
+                                    if let (GroundCover::Grass, _) = self.tiles.get(neighbor_index).unwrap() {
                                         grassy_neighbor_count += 1;
                                     }
                                 }
@@ -656,7 +708,7 @@ impl GameState {
                             // SAFETY:
                             //  tile_index constructed from : x, y ranging from 0..GRID_DIM
                             unsafe {
-                                *(new_grass_state.get_unchecked_mut(tile_index)) = GroundCover::Grass;
+                                new_grass_state.get_unchecked_mut(tile_index).0 = GroundCover::Grass;
                             }
                         }
                     }
@@ -689,7 +741,7 @@ pub struct Input {
 
     pub pause: bool,
     pub show_grid: bool,
-    pub show_seed: bool,
+    pub show_dual: bool,
     pub show_trees: bool,
 }
 
@@ -705,9 +757,9 @@ impl Default for Input {
             zoom_in: Default::default(),
             zoom_out: Default::default(),
             pause: Default::default(),
-            show_grid: Default::default(),
-            show_seed: Default::default(),
 
+            show_grid: false,
+            show_dual: false,
             show_trees: true,
         }
     }

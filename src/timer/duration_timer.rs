@@ -13,10 +13,18 @@ impl DurationTimer {
         }
     }
 
-    pub fn measure<F>(&mut self, func: F) -> Duration where F: FnOnce() -> () {
+    pub fn begin_measure(&mut self) {
         self.reset();
-        func();
+    }
+
+    pub fn end_measure(&mut self) -> Duration {
         self.elapsed()
+    }
+
+    pub fn measure<F>(&mut self, func: F) -> Duration where F: FnOnce() -> () {
+        self.begin_measure();
+        func();
+        self.end_measure()
     }
 }
 
