@@ -155,14 +155,44 @@ impl GameState {
             tile.1 = SoilType::Stony;
         }
 
-        const NUM_INITIAL_TREES: usize = 30;
-        let mut plant_locations = Vec::with_capacity(NUM_INITIAL_TREES);
+        // const NUM_INITIAL_TREES: usize = 30;
+        // let mut plant_locations = Vec::with_capacity(NUM_INITIAL_TREES);
+        // for _ in 0..NUM_INITIAL_TREES {
+        //     plant_locations.push(
+        //         WorldPosition {
+        //             coord: TileCoordinate {
+        //                 x: result.rng.gen_range(0..GRID_DIM) as i32,
+        //                 y: result.rng.gen_range(0..GRID_DIM) as i32,
+        //             },
+        //             offset: TileOffset {
+        //                 x: result.rng.gen_range(0.0..1.0),
+        //                 y: result.rng.gen_range(0.0..1.0),
+        //             },
+        //         }
+        //     );
+        // }
+
+        const NUM_INITIAL_TREES: usize = 10;
+        let mut plant_locations = Vec::with_capacity(NUM_INITIAL_TREES * 2);
         for _ in 0..NUM_INITIAL_TREES {
             plant_locations.push(
                 WorldPosition {
                     coord: TileCoordinate {
                         x: result.rng.gen_range(0..GRID_DIM) as i32,
-                        y: result.rng.gen_range(0..GRID_DIM) as i32,
+                        y: (GRID_DIM / 3) as i32,
+                    },
+                    offset: TileOffset {
+                        x: result.rng.gen_range(0.0..1.0),
+                        y: result.rng.gen_range(0.0..1.0),
+                    },
+                }
+            );
+
+            plant_locations.push(
+                WorldPosition {
+                    coord: TileCoordinate {
+                        x: result.rng.gen_range(0..GRID_DIM) as i32,
+                        y: ((GRID_DIM / 3) * 2) as i32,
                     },
                     offset: TileOffset {
                         x: result.rng.gen_range(0.0..1.0),

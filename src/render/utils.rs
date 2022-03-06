@@ -47,42 +47,58 @@ pub mod gpu {
     pub fn create_render_pipeline(
         device: &wgpu::Device,
         label: &str,
-        layout: &wgpu::PipelineLayout,
+        bind_group_layouts: &[&wgpu::BindGroupLayout],
+        push_constant_ranges: &[wgpu::PushConstantRange],
         buffer_layouts: &[wgpu::VertexBufferLayout],
         fragment_color_format: wgpu::TextureFormat,
         shader_module: &wgpu::ShaderModule
     ) -> wgpu::RenderPipeline {
+        let layout_label = &(String::from(label) + " -> layout");
+
+        //NOTE: These _could_ be reused between pipelines, but we're doing it the lazy way.
+        let layout = device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some(&layout_label),
+                bind_group_layouts,
+                push_constant_ranges,
+            }
+        );
+
+        let vertex_state = wgpu::VertexState {
+            module: shader_module,
+            entry_point: "main",
+            buffers: &buffer_layouts,
+        };
+
+        let fragment_state = wgpu::FragmentState {
+            module: shader_module,
+            entry_point: "main",
+            targets: &[
+                wgpu::ColorTargetState {
+                    format: fragment_color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }
+            ],
+        };
+
+        let primitive_state = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            clamp_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        };
+
         device.create_render_pipeline(
             &wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: shader_module,
-                    entry_point: "main",
-                    buffers: &buffer_layouts,
-                },
-                fragment: Some(
-                    wgpu::FragmentState {
-                        module: shader_module,
-                        entry_point: "main",
-                        targets: &[
-                            wgpu::ColorTargetState {
-                                format: fragment_color_format,
-                                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                                write_mask: wgpu::ColorWrites::ALL,
-                            }
-                        ],
-                    }
-                ),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: Some(wgpu::Face::Back),
-                    clamp_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
+                layout: Some(&layout),
+                vertex: vertex_state,
+                fragment: Some(fragment_state),
+                primitive: primitive_state,
                 depth_stencil: None,
                 // depth_stencil: Some(wgpu::DepthStencilState {
                 //     format: todo!(),

@@ -117,7 +117,7 @@ impl<'t> Iterator for TreeRegionIteratorMut<'t> {
 
             // SAFETY:
             //  Compiler cannot statically determine that our iterator won't return a reference to the same part of the slice twice.
-            //  We know that we won't but we must unsafely re-cast a ptr to do work around this.
+            //  We know that we won't but we must unsafely re-cast a ptr to work around this.
             let result = unsafe {
                 let slice_ptr = self.trees.as_mut_ptr();
                 let tree_ptr = slice_ptr.add(slot_index);

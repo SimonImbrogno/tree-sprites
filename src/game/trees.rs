@@ -46,17 +46,18 @@ impl TreeSpecies {
     pub fn shadow_radius(&self, growth_stage: TreeGrowthStage) -> f32 {
         match self {
             Self::Ash => match growth_stage {
-                TreeGrowthStage::Sapling => 0.5,
-                TreeGrowthStage::Mature => 0.8,
-                TreeGrowthStage::Old => 0.7,
-                TreeGrowthStage::Decline => 0.5,
+                TreeGrowthStage::Sapling => 0.55,
+                TreeGrowthStage::Mature => 0.9,
+                TreeGrowthStage::Old => 0.8,
+                TreeGrowthStage::Decline => 0.55,
                 _ => 0.0,
             },
             Self::Fir => match growth_stage {
-                TreeGrowthStage::Sapling => 0.5,
-                TreeGrowthStage::Mature => 0.6,
-                TreeGrowthStage::Old => 0.5,
-                TreeGrowthStage::Decline => 0.4,
+                TreeGrowthStage::Seedling => 0.25,
+                TreeGrowthStage::Sapling => 0.55,
+                TreeGrowthStage::Mature => 0.7,
+                TreeGrowthStage::Old => 0.65,
+                TreeGrowthStage::Decline => 0.55,
                 _ => 0.0,
             },
         }
