@@ -19,7 +19,7 @@ use super::position::{WorldPosition, TileOffset, TileCoordinate};
 use super::trees::{Tree, TreeGrowthStage, TreeSpecies};
 use super::tree_region_iterator::{TreeRegionIterator, TreeRegionIteratorMut};
 
-pub const GRID_DIM: usize = 20;
+pub const GRID_DIM: usize = 30;
 pub const GRID_SIZE: usize = GRID_DIM * GRID_DIM;
 
 pub const TILE_DIM: f32 = 1.0;
@@ -205,6 +205,7 @@ impl GameState {
         let species = [
             TreeSpecies::Ash,
             TreeSpecies::Fir,
+            TreeSpecies::CottonWood,
         ];
 
         for pos in plant_locations {
@@ -361,16 +362,11 @@ impl GameState {
         use TreeGrowthStage::*;
         match tree_stage {
             Sprout | Seedling => unsafe { self.delete_tree(tree_slot_index) },
-            Sapling => {
-                let tree = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
-                tree.stage = Stump;
-                tree.growth_target = tree.growth_required_for_next_stage();
-            }
-            Mature | Old | Decline => {
+            Sapling | Mature | Old | Decline => {
                 let tree = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
                 tree.stage = Snag;
                 tree.growth_target = tree.growth_required_for_next_stage();
-            }
+            },
             Snag | Stump => (), // already dead
         }
     }
@@ -441,28 +437,26 @@ impl GameState {
         let tree_pos = t_ref.position;
         let tree_species = t_ref.species;
         let tree_stage = t_ref.stage;
-        let mut shade_factor = t_ref.shade_factor;
 
         let old_shadow_radius = tree_species.shadow_radius(previous_stage);
         let new_shadow_radius = tree_species.shadow_radius(tree_stage);
         let max_shadow_radius = f32::max(old_shadow_radius, new_shadow_radius);
 
-        for (tree_slot, near_tree) in self.iter_trees_in_radius_mut(tree_pos, max_shadow_radius) {
-            if tree_slot == tree_slot_index { continue; }
+        for (near_tree_slot, near_tree) in self.iter_trees_in_radius_mut(tree_pos, max_shadow_radius) {
+            if near_tree_slot == tree_slot_index { continue; }
 
             let distance = tree_pos.distance(&near_tree.position);
 
+            // Remove effect of old shadow
             if distance <= old_shadow_radius && old_shadow_radius > 0.0 {
-                shade_factor /= (1.0 - smoothstep(new_shadow_radius, 0.0, distance));
+                near_tree.shade_factor /= (1.0 - smoothstep(old_shadow_radius, 0.0, distance));
             }
 
+            // Add effect of new shadow
             if distance <= new_shadow_radius && new_shadow_radius > 0.0 {
-                shade_factor *= (1.0 - smoothstep(new_shadow_radius, 0.0, distance));
+                near_tree.shade_factor *= (1.0 - smoothstep(new_shadow_radius, 0.0, distance));
             }
         }
-
-        let t_ref_mut = self.trees.get_mut(tree_slot_index).unwrap().as_mut().unwrap();
-        t_ref_mut.shade_factor = shade_factor;
     }
 
     pub fn update(&mut self, input: &Input) {
@@ -551,8 +545,14 @@ impl GameState {
 
                 let soil_multiplier = if soil_type == tree.species.soil_preference() { 1.0 } else { 0.4 };
 
+                let old_shade_factor = tree.shade_factor;
+
                 //Kill the tree if it's not getting enough oomph.
-                let growth_multiplier = 1.0 * tree.shade_factor * soil_multiplier;
+                let mut growth_multiplier = 1.0;
+                if tree.is_alive() {
+                    growth_multiplier *= tree.shade_factor * soil_multiplier;
+                }
+
                 if growth_multiplier <= 0.05 {
                     push_event!(Event::Kill { tree_slot_index: slot_index });
                     tree_index += 1;
@@ -565,6 +565,21 @@ impl GameState {
 
                 if (old_grow_stage != new_grow_stage) {
                     self.update_shade_for_surrounding_trees(slot_index, old_grow_stage);
+
+                    let new_shade_factor = unsafe { self.trees.get_unchecked_mut(slot_index).as_ref().unwrap_unchecked().shade_factor };
+                    if old_shade_factor != new_shade_factor {
+                        let t_ref = self.trees.get(slot_index).unwrap().as_ref().unwrap();
+                        let tree_pos = t_ref.position;
+                        let tree_species = t_ref.species;
+                        let old_shadow_radius = tree_species.shadow_radius(old_grow_stage);
+                        let new_shadow_radius = tree_species.shadow_radius(new_grow_stage);
+                        let max_shadow_radius = f32::max(old_shadow_radius, new_shadow_radius);
+
+                        let slots = self.iter_trees_in_radius_mut(tree_pos, max_shadow_radius).map(|(i, _)| i).collect::<Vec<_>>();
+
+                        log::warn!("Tree {slot_index} grew from {old_grow_stage:?} -> {new_grow_stage:?} but it's own shade changed from {old_shade_factor} -> {new_shade_factor}!!");
+                        log::warn!("Tree slots near by {slots:?}");
+                    }
                 }
 
                 // SAFETY:
@@ -615,7 +630,7 @@ impl GameState {
                                     }
 
                                     tree.seed_timer = {
-                                        let seed_rate = tree.species.seed_rate();
+                                        let seed_rate = tree.species.seed_success_rate();
                                         let min = seed_rate.average - seed_rate.variation;
                                         let max = seed_rate.average + seed_rate.variation;
 
@@ -626,7 +641,7 @@ impl GameState {
                         }
                     },
                     Stump => {
-                        if self.rng.gen_ratio(1, 1000) {
+                        if self.rng.gen_ratio(1, 500) {
                             push_event!(Event::Delete { tree_slot_index: slot_index });
                         }
                     },

@@ -12,34 +12,39 @@ pub struct SeedRate {
 pub enum TreeSpecies {
     Ash,
     Fir,
+    CottonWood,
 }
 
 impl TreeSpecies {
     pub fn seed_radius(&self) -> (f32, f32) {
         match self {
-            Self::Ash => (self.crowd_radius(), 4.5),
-            Self::Fir => (self.crowd_radius(), 1.5),
+            Self::Ash        => (self.crowd_radius(), 4.5),
+            Self::Fir        => (self.crowd_radius(), 1.5),
+            Self::CottonWood => (self.crowd_radius(), 6.0),
         }
     }
 
     pub fn crowd_radius(&self) -> f32 {
         match self {
-            Self::Ash => 0.4,
-            Self::Fir => 0.3,
+            Self::Ash        => 0.4,
+            Self::Fir        => 0.3,
+            Self::CottonWood => 0.6,
         }
     }
 
-    pub fn seed_rate(&self) -> SeedRate {
+    pub fn seed_success_rate(&self) -> SeedRate {
         match self {
-            Self::Ash => SeedRate { average: 4.0, variation: 1.0},
-            Self::Fir => SeedRate { average: 3.0, variation: 1.0},
+            Self::Ash        => SeedRate { average: 4.0, variation: 1.0},
+            Self::Fir        => SeedRate { average: 3.0, variation: 1.0},
+            Self::CottonWood => SeedRate { average: 12.0, variation: 1.0},
         }
     }
 
     pub fn soil_preference(&self) -> SoilType {
         match self {
-            Self::Ash => SoilType::Normal,
-            Self::Fir => SoilType::Stony,
+            Self::Ash        => SoilType::Normal,
+            Self::Fir        => SoilType::Stony,
+            Self::CottonWood => SoilType::Normal,
         }
     }
 
@@ -58,6 +63,14 @@ impl TreeSpecies {
                 TreeGrowthStage::Mature => 0.7,
                 TreeGrowthStage::Old => 0.65,
                 TreeGrowthStage::Decline => 0.55,
+                _ => 0.0,
+            },
+            Self::CottonWood => match growth_stage {
+                TreeGrowthStage::Seedling => 0.25,
+                TreeGrowthStage::Sapling => 0.7,
+                TreeGrowthStage::Mature => 0.9,
+                TreeGrowthStage::Old => 0.9,
+                TreeGrowthStage::Decline => 0.8,
                 _ => 0.0,
             },
         }
@@ -113,6 +126,15 @@ impl From<&Tree> for TileType {
             (Fir, Decline)  => Self::PineTreeDecline,
             (Fir, Snag)     => Self::PineTreeSnag,
             (Fir, Stump)    => Self::PineTreeStump,
+
+            (CottonWood, Sprout)   => Self::CottonWoodTreeSprout,
+            (CottonWood, Seedling) => Self::CottonWoodTreeSeedling,
+            (CottonWood, Sapling)  => Self::CottonWoodTreeSapling,
+            (CottonWood, Mature)   => Self::CottonWoodTreeMature,
+            (CottonWood, Old)      => Self::CottonWoodTreeOld,
+            (CottonWood, Decline)  => Self::CottonWoodTreeDecline,
+            (CottonWood, Snag)     => Self::CottonWoodTreeSnag,
+            (CottonWood, Stump)    => Self::CottonWoodTreeStump,
         }
     }
 }
@@ -201,7 +223,20 @@ impl Tree {
             (Fir, Decline)  => Some(20.0),
             (Fir, Snag)     => Some(10.0),
 
+            (CottonWood, Sprout)   => Some(2.0),
+            (CottonWood, Seedling) => Some(3.0),
+            (CottonWood, Sapling)  => Some(10.0),
+            (CottonWood, Mature)   => Some(80.0),
+            (CottonWood, Old)      => Some(75.0),
+            (CottonWood, Decline)  => Some(30.0),
+            (CottonWood, Snag)     => Some(15.0),
+
             (_, Stump)    => None,
         }
+    }
+
+    // A little counter intuitive "dead, decaying" trees still "grow", they're just unaffected by modifiers.
+    pub fn is_alive(&self) -> bool {
+        self.stage != TreeGrowthStage::Snag && self.stage != TreeGrowthStage::Stump
     }
 }
