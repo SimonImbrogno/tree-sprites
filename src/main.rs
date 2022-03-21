@@ -54,8 +54,6 @@ fn process_window_event(event: WindowEvent, render_state: &mut RenderState, inpu
                         VirtualKeyCode::H => input_state.show_dual = !input_state.show_dual,
                         VirtualKeyCode::T => input_state.show_trees = !input_state.show_trees,
 
-                        VirtualKeyCode::R => unsafe { test_new_render = !test_new_render },
-
                         VirtualKeyCode::LControl => input_state.zoom_in  = false,
                         VirtualKeyCode::Space    => input_state.zoom_out = false,
 
@@ -97,10 +95,8 @@ fn handle_render_result(render_result: RenderResult, render_state: &mut RenderSt
     }
 }
 
-static mut test_new_render: bool = true;
-
-const UPS_TARGET: u64 = 144;
-const FPS_TARGET: u64 = 144;
+const UPS_TARGET: u64 = 120;
+const FPS_TARGET: u64 = 120;
 
 fn main() {
     //Duration constructor is unstable as constfn;
@@ -154,7 +150,7 @@ fn main() {
                     sim_time    += update_target_dt;
                     accumulator -= update_target_dt;
 
-                    input.dt = update_target_dt;
+                    input.dt = update_target_dt * 2;
                     input.t = sim_time;
 
                     measure!(avg_update_timer, {

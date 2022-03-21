@@ -1,6 +1,8 @@
+use std::slice::SliceIndex;
+
 use super::geometry_buffer::GeometryBuffer;
 use super::super::vertex::Vertex;
-use super::{Buffer, Index, WriteGeometryBuffer, DrawGeometryBuffer};
+use super::{Buffer, Index, WriteGeometryBuffer, DrawGeometryBuffer, ViewableBuffer};
 
 pub struct QuadBuffer<V, I>
 where
@@ -8,14 +10,8 @@ where
     I: Index
 {
     pub buffer: GeometryBuffer<V, I>,
-    quad_index: usize,
+    next_quad_index: usize,
 }
-
-impl<V, I> Buffer<V, I> for QuadBuffer<V, I>
-where
-    V: Vertex,
-    I: Index
-{ }
 
 impl<V, I> QuadBuffer<V, I>
 where
@@ -28,7 +24,7 @@ where
 
         Self {
             buffer: GeometryBuffer::new(device, label, vertex_capacity, index_capacity),
-            quad_index: 0,
+            next_quad_index: 0,
         }
     }
 
@@ -38,27 +34,72 @@ where
     {
         let new_vertices: &[V; 4] = &quad.into();
 
-        let base = self.quad_index * 4;
+        let base = self.next_quad_index * 4;
         let new_indices = &[
             I::from_usize(base + 0), I::from_usize(base + 1), I::from_usize(base + 2),
             I::from_usize(base + 2), I::from_usize(base + 3), I::from_usize(base + 0)
         ];
 
         self.buffer.push_geometry(new_vertices, new_indices);
-        self.quad_index += 1;
+        self.next_quad_index += 1;
     }
+}
 
-    pub fn reset(&mut self) {
+impl<V, I> Buffer for QuadBuffer<V, I>
+where
+    V: Vertex,
+    I: Index
+{
+    fn reset(&mut self) {
         self.buffer.reset();
-        self.quad_index = 0;
+        self.next_quad_index = 0;
     }
 
-    pub fn quad_index(&self) -> usize {
-        self.quad_index
+    fn vertex_count(&self) -> usize {
+        self.buffer.vertex_count()
     }
 
-    pub fn set_quad_index(&mut self, new: usize) {
-        self.quad_index = new;
+    fn vertex_capacity(&self) -> usize {
+        self.buffer.vertex_capacity()
+    }
+
+    fn remaining_vertex_capacity(&self) -> usize {
+        self.buffer.remaining_vertex_capacity()
+    }
+
+    fn index_count(&self) -> usize {
+        self.buffer.index_count()
+    }
+
+    fn index_capacity(&self) -> usize {
+        self.buffer.index_capacity()
+    }
+
+    fn remaining_index_capacity(&self) -> usize {
+        self.buffer.remaining_index_capacity()
+    }
+}
+
+impl<V, I>  ViewableBuffer<V, I> for QuadBuffer<V, I>
+where
+    V: Vertex,
+    I: Index
+{
+    // TODO: is there some way to abstract over SliceIndex implementors to correctly adjust indices? :/
+    fn get(&self, index: usize) -> Option<&[V]>
+    {
+        let begin = index * 4;
+        let end = begin + 4;
+
+        self.buffer.get(begin..end)
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut [V]>
+    {
+        let begin = index * 4;
+        let end = begin + 4;
+
+        self.buffer.get_mut(begin..end)
     }
 }
 

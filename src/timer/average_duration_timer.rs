@@ -2,19 +2,22 @@ use std::time::Duration;
 
 use super::{DurationTimer, Timer};
 
-pub struct AverageDurationTimer<const NUM_MEASUREMENTS: usize> {
+pub struct AverageDurationTimer<const NUM_MEASUREMENTS: usize = 20> {
     duration_timer: DurationTimer,
     measurement_index: usize,
-    measurements: [Duration; NUM_MEASUREMENTS],
+    measurements: Vec<Duration>,
     average: Duration,
 }
 
 impl<const NUM_MEASUREMENTS: usize> AverageDurationTimer<NUM_MEASUREMENTS> {
     pub fn new() -> Self {
+        let mut measurements = Vec::new();
+        measurements.resize_with(NUM_MEASUREMENTS, Default::default);
+
         Self {
             duration_timer: DurationTimer::new(),
             measurement_index: 0,
-            measurements: [Duration::default(); NUM_MEASUREMENTS],
+            measurements,
             average: Duration::default(),
         }
     }
@@ -63,6 +66,10 @@ impl<const NUM_MEASUREMENTS: usize> AverageDurationTimer<NUM_MEASUREMENTS> {
         self.begin_measure();
         func();
         self.end_measure()
+    }
+
+    pub fn measurements(&self) -> &[Duration]{
+        &self.measurements
     }
 }
 

@@ -2,6 +2,7 @@ use std::mem::size_of;
 use std::time::Duration;
 
 use anyhow::Result;
+use env_logger::fmt::Color;
 use log::debug;
 use winit::window::Window;
 
@@ -10,14 +11,16 @@ use crate::game::{TileType, self};
 use crate::timer::{AverageDurationTimer, TargetTimer, TimerState, Timer};
 use crate::timer::measure;
 
-use super::buffer::{QuadBuffer, DrawGeometryBuffer, WriteGeometryBuffer};
+use super::debug_ui::BufferUsageMeter;
+
+use super::buffer::{Buffer, ViewableBuffer, GeometryBuffer, DrawGeometryBuffer, WriteGeometryBuffer};
 use super::buffer_usages::BufferUsages;
 use super::camera::{Camera, CameraUniform};
-use super::quad::{TexturedQuad, TexturedUvQuad, UntexturedQuad};
+use super::quad::{TexturedQuad, TexturedUvQuad, UntexturedQuad, ColoredQuad};
 use super::sprite_sheet::{SpriteSheet};
 use super::texture::Texture;
 use super::utils::gpu::{ create_buffer, create_shader_module, create_render_pipeline };
-use super::vertex::{Vertex, TexturedVertex, UvVertex};
+use super::vertex::{Vertex, TexturedVertex, UvVertex, ColoredVertex};
 
 pub struct RenderState {
     window_size: winit::dpi::PhysicalSize<u32>,
@@ -32,9 +35,10 @@ pub struct RenderState {
     device: wgpu::Device,
     queue: wgpu::Queue,
 
-    tile_quad_buffer: QuadBuffer<TexturedVertex, u16>,
-    shadow_quad_buffer: QuadBuffer<UvVertex, u16>,
-    entity_quad_buffer: QuadBuffer<TexturedVertex, u16>,
+    tile_quad_buffer: GeometryBuffer<TexturedVertex, u16>,
+    shadow_quad_buffer: GeometryBuffer<UvVertex, u16>,
+    entity_quad_buffer: GeometryBuffer<TexturedVertex, u16>,
+    ui_quad_buffer: GeometryBuffer<ColoredVertex, u16>,
 
     sprite_sheet: SpriteSheet<TileType>,
     tile_sprite_sheet: Texture,
@@ -43,14 +47,18 @@ pub struct RenderState {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
+    ui_camera_buffer: wgpu::Buffer,
+    ui_camera_bind_group: wgpu::BindGroup,
+
     clear_color: [f64; 3],
     tile_render_pipeline: wgpu::RenderPipeline,
     shadow_render_pipeline: wgpu::RenderPipeline,
+    ui_render_pipeline: wgpu::RenderPipeline,
 
     //Timers...
     debug_log_timer: TargetTimer,
-    ground_render_timer: AverageDurationTimer<20>,
-    tree_render_timer: AverageDurationTimer<20>,
+    ground_render_timer: AverageDurationTimer<600>,
+    tree_render_timer: AverageDurationTimer<600>,
 }
 
 impl RenderState {
@@ -98,8 +106,9 @@ impl RenderState {
 
         debug!("Compiling shaders...");
 
-        let main_shader = create_shader_module(&device, "render_state.render_pipeline -> main_shader", include_str!("../../res/shaders/main_shader.wgsl"));
-        let circle_shader = create_shader_module(&device, "render_state.render_pipeline -> circle_shader", include_str!("../../res/shaders/circle_shader.wgsl"));
+        let main_shader = create_shader_module(&device, "render_state -> main_shader", include_str!("../../res/shaders/main_shader.wgsl"));
+        let circle_shader = create_shader_module(&device, "render_state -> circle_shader", include_str!("../../res/shaders/circle_shader.wgsl"));
+        let ui_shader = create_shader_module(&device, "render_state -> ui_shader", include_str!("../../res/shaders/debug_ui_shader.wgsl"));
 
         debug!("Loading textures...");
 
@@ -111,10 +120,10 @@ impl RenderState {
 
         debug!("Creating buffers...");
 
-        let buffer_capacity = 50000;
-        let tile_quad_buffer = QuadBuffer::new(&device, "render_state.tile_quad_buffer", buffer_capacity);
-        let shadow_quad_buffer = QuadBuffer::new(&device, "render_state.shadow_quad_buffer", buffer_capacity);
-        let entity_quad_buffer = QuadBuffer::new(&device, "render_state.entity_quad_buffer", buffer_capacity);
+        let tile_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.tile_quad_buffer", 8000);
+        let shadow_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.shadow_quad_buffer", 8000);
+        let entity_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.entity_quad_buffer", 8000);
+        let ui_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.entity_quad_buffer", 2000);
 
         let camera = Camera {
             aspect_ratio: 1.0,
@@ -124,6 +133,10 @@ impl RenderState {
 
         let camera_buffer = create_buffer(&device, "render_state.camera_buffer", size_of::<CameraUniform>(), BufferUsages::UniformCopyDst.into());
         queue.write_buffer(&camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(camera)]));
+
+        let ui_camera_buffer = create_buffer(&device, "render_state.ui_camera_buffer", size_of::<CameraUniform>(), BufferUsages::UniformCopyDst.into());
+        let camera_uniform = CameraUniform::simple_canvas_ortho(window_size.width, window_size.height);
+        queue.write_buffer(&ui_camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
 
         debug!("Creating render pipeline bind groups...");
 
@@ -153,6 +166,19 @@ impl RenderState {
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: camera_buffer.as_entire_binding(),
+                    }
+                ],
+            }
+        );
+
+        let ui_camera_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("render_state.ui_camera_bind_group"),
+                layout: &camera_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: ui_camera_buffer.as_entire_binding(),
                     }
                 ],
             }
@@ -232,6 +258,23 @@ impl RenderState {
             )
         };
 
+        let ui_render_pipeline = {
+            let label = "render_state.debug_ui_render_pipeline";
+            let bind_group_layouts = [&camera_bind_group_layout];
+            let push_constant_ranges = [];
+            let buffer_layouts = [ColoredVertex::describe_buffer()];
+
+            create_render_pipeline(
+                &device,
+                label,
+                &bind_group_layouts,
+                &push_constant_ranges,
+                &buffer_layouts,
+                surface_config.format,
+                &ui_shader
+            )
+        };
+
         Self {
             window_size,
             camera,
@@ -248,6 +291,7 @@ impl RenderState {
             tile_quad_buffer,
             shadow_quad_buffer,
             entity_quad_buffer,
+            ui_quad_buffer,
 
             sprite_sheet,
             tile_sprite_sheet,
@@ -256,10 +300,14 @@ impl RenderState {
             camera_buffer,
             camera_bind_group,
 
+            ui_camera_buffer,
+            ui_camera_bind_group,
+
             //render_pipeline,
             clear_color: [0.0, 0.0, 0.0],
             tile_render_pipeline,
             shadow_render_pipeline,
+            ui_render_pipeline,
 
             debug_log_timer: TargetTimer::new(Duration::from_secs(1)),
             ground_render_timer: AverageDurationTimer::new(),
@@ -303,12 +351,11 @@ impl RenderState {
             depth_stencil_attachment: None,
         };
 
-        self.camera.update(&game_state.camera, self.window_size);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(self.camera)]));
-
+        // TODO: this should probably be automatic?
         self.tile_quad_buffer.reset();
         self.shadow_quad_buffer.reset();
         self.entity_quad_buffer.reset();
+        self.ui_quad_buffer.reset();
 
         measure!(self.ground_render_timer, {
             self.draw_ground(game_state);
@@ -320,11 +367,17 @@ impl RenderState {
             self.draw_trees(game_state);
         });
 
+        self.draw_debug_graphs(game_state);
+
         let mut render_pass = encoder.begin_render_pass(&render_pass_descriptor);
+
+        self.camera.update(&game_state.camera, self.window_size);
+        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(self.camera)]));
 
         self.queue.write_geometry_buffer(&mut self.tile_quad_buffer);
         self.queue.write_geometry_buffer(&mut self.shadow_quad_buffer);
         self.queue.write_geometry_buffer(&mut self.entity_quad_buffer);
+        self.queue.write_geometry_buffer(&mut self.ui_quad_buffer);
 
         render_pass.set_pipeline(&self.tile_render_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
@@ -339,6 +392,13 @@ impl RenderState {
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
         render_pass.draw_geometry_buffer(&self.entity_quad_buffer);
+
+        let camera_uniform = CameraUniform::simple_canvas_ortho(self.window_size.width, self.window_size.height);
+        self.queue.write_buffer(&self.ui_camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+
+        render_pass.set_pipeline(&self.ui_render_pipeline);
+        render_pass.set_bind_group(0, &self.ui_camera_bind_group, &[]);
+        render_pass.draw_geometry_buffer(&self.ui_quad_buffer);
 
         drop(render_pass);
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -651,6 +711,141 @@ impl RenderState {
                     self.tile_quad_buffer.push_quad(quad);
                 }
             }
+        }
+    }
+
+    fn draw_debug_graphs(&mut self, game_state: &GameState) {
+        const WIDGET_WIDTH: i32 = 240;
+        const WIDGET_HEIGHT: i32 = 20;
+        const SPACER_HEIGHT: i32 = 5;
+
+        let ui_start = self.window_size.height as i32;
+        let mut baseline = ui_start;
+
+        let mut quads = Vec::<[_; 4]>::new();
+
+        let add_spacer = |baseline| -> i32 {
+            baseline - SPACER_HEIGHT
+        };
+
+        let add_buffer_usage_meter = |baseline, meter: BufferUsageMeter, quads: &mut Vec<_>| -> i32 {
+            let new_baseline = baseline - WIDGET_HEIGHT;
+            let y_pos = new_baseline;
+
+            // bg
+            let quad = ColoredQuad {
+                pos: (5.0, y_pos as f32),
+                dim: (WIDGET_WIDTH as f32, WIDGET_HEIGHT as f32),
+                color: (0.5, 0.5, 0.5, 0.3),
+            };
+            quads.push(quad.into());
+
+            let vertex_usage_perc = meter.vertex_usage as f32 / meter.vertex_capacity as f32;
+            let index_usage_perc = meter.index_usage as f32 / meter.index_capacity as f32;
+
+            let choose_color = |perc| {
+                match perc {
+                    x if x > 0.90 => (0.6, 0.1, 0.1, 0.7),
+                    x if x > 0.75 => (0.5, 0.5, 0.2, 0.7),
+                    _ => (1.0, 1.0, 1.0, 0.7),
+                }
+            };
+
+            let vertex_bar_color = choose_color(vertex_usage_perc);
+            let index_bar_color = {
+                let mut c = vertex_bar_color;
+                c.0 *= 0.8;
+                c.1 *= 0.8;
+                c.2 *= 0.8;
+                c
+            };
+
+            quads.push(
+                ColoredQuad {
+                    pos: (5.0, y_pos as f32 + (WIDGET_HEIGHT / 2) as f32),
+                    dim: (WIDGET_WIDTH as f32 * vertex_usage_perc, (WIDGET_HEIGHT / 2) as f32),
+                    color: vertex_bar_color,
+                }.into()
+            );
+
+            quads.push(
+                ColoredQuad {
+                    pos: (5.0, y_pos as f32),
+                    dim: (WIDGET_WIDTH as f32 * index_usage_perc, (WIDGET_HEIGHT / 2) as f32),
+                    color: index_bar_color,
+                }.into()
+            );
+
+            new_baseline
+        };
+
+        let add_plot = |baseline, min: f32, max: f32, data: &[Duration], quads: &mut Vec<_>| -> i32 {
+            const PLOT_HEIGHT: i32 = WIDGET_HEIGHT * 4;
+            let new_baseline = baseline - PLOT_HEIGHT;
+            let y_pos = new_baseline as f32;
+
+
+            quads.push(
+                ColoredQuad {
+                    pos: (5.0, y_pos as f32),
+                    dim: (WIDGET_WIDTH as f32, PLOT_HEIGHT as f32),
+                    color: (0.5, 0.5, 0.5, 0.3),
+                }.into()
+            );
+
+            let perc = data.iter().map(|d| (d.as_micros() as f32 - min).max(0.0) / (max - min));
+            let perc2 = perc.clone();
+
+            // A little janky when the grah contains more samples than pixels, ignore for now.
+            let quad_width = WIDGET_WIDTH as f32 / (data.len() as i32 - 1).max(1) as f32;
+
+            for (index, (first, second)) in perc.zip(perc2.skip(1)).enumerate() {
+                let f_height = first * PLOT_HEIGHT as f32;
+                let s_height = second * PLOT_HEIGHT as f32;
+
+                let x_min = (index as f32 * quad_width) + 5.0;
+                let x_max = x_min + quad_width;
+                let y_min = y_pos;
+                let y_max_left = (y_min + f_height).min((new_baseline + PLOT_HEIGHT) as f32);
+                let y_max_right = (y_min + s_height).min((new_baseline + PLOT_HEIGHT) as f32);
+
+                quads.push(
+                    [
+                        ColoredVertex { position: [x_max, y_max_right, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+                        ColoredVertex { position: [x_min, y_max_left,  0.0], color: [1.0, 1.0, 1.0, 1.0] },
+                        ColoredVertex { position: [x_min, y_min,       0.0], color: [1.0, 1.0, 1.0, 1.0] },
+                        ColoredVertex { position: [x_max, y_min,       0.0], color: [1.0, 1.0, 1.0, 1.0] },
+                    ]
+                );
+            }
+
+            new_baseline
+        };
+
+        let frame_budget = 8333.0; //micros, janky, hardcoded.
+
+        baseline = add_spacer(baseline);
+        baseline = add_plot(baseline, 0.0, frame_budget, self.ground_render_timer.measurements(), &mut quads);
+        baseline = add_spacer(baseline);
+        baseline = add_buffer_usage_meter(baseline, (&self.tile_quad_buffer).into(), &mut quads);
+
+        baseline = add_spacer(baseline);
+        baseline = add_plot(baseline, 0.0, frame_budget, self.tree_render_timer.measurements(), &mut quads);
+        baseline = add_spacer(baseline);
+        baseline = add_buffer_usage_meter(baseline, (&self.shadow_quad_buffer).into(), &mut quads);
+        baseline = add_spacer(baseline);
+        baseline = add_buffer_usage_meter(baseline, (&self.entity_quad_buffer).into(), &mut quads);
+
+        for &quad in quads.iter() {
+            self.ui_quad_buffer.push_quad(quad);
+        }
+        quads.clear();
+
+        baseline = add_spacer(baseline);
+        baseline = add_buffer_usage_meter(baseline, (&self.ui_quad_buffer).into(), &mut quads);
+
+        for quad in quads {
+            self.ui_quad_buffer.push_quad(quad);
         }
     }
 }

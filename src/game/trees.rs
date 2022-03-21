@@ -18,17 +18,9 @@ pub enum TreeSpecies {
 impl TreeSpecies {
     pub fn seed_radius(&self) -> (f32, f32) {
         match self {
-            Self::Ash        => (self.crowd_radius(), 4.5),
-            Self::Fir        => (self.crowd_radius(), 1.5),
-            Self::CottonWood => (self.crowd_radius(), 6.0),
-        }
-    }
-
-    pub fn crowd_radius(&self) -> f32 {
-        match self {
-            Self::Ash        => 0.4,
-            Self::Fir        => 0.3,
-            Self::CottonWood => 0.6,
+            Self::Ash        => (0.4, 4.5),
+            Self::Fir        => (0.3, 1.5),
+            Self::CottonWood => (0.6, 6.0),
         }
     }
 
@@ -36,7 +28,7 @@ impl TreeSpecies {
         match self {
             Self::Ash        => SeedRate { average: 4.0, variation: 1.0},
             Self::Fir        => SeedRate { average: 3.0, variation: 1.0},
-            Self::CottonWood => SeedRate { average: 12.0, variation: 1.0},
+            Self::CottonWood => SeedRate { average: 16.0, variation: 3.0},
         }
     }
 

@@ -69,3 +69,33 @@ impl Vertex for TexturedVertex {
         }
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct ColoredVertex {
+    pub position: [f32; 3],
+    pub color: [f32; 4],
+}
+
+impl Vertex for ColoredVertex {
+    fn describe_buffer<'a>() -> wgpu::VertexBufferLayout<'a> {
+        use std::mem::size_of;
+
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                },
+                wgpu::VertexAttribute {
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                },
+            ],
+        }
+    }
+}

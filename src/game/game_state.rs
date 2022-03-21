@@ -139,20 +139,30 @@ impl GameState {
             camera,
         };
 
-        for (index, tile) in result.tiles.iter_mut().enumerate() {
-            if
-                index / GRID_DIM == 0 ||
-                index % GRID_DIM == 0 ||
-                index / GRID_DIM == GRID_DIM -1 ||
-                index % GRID_DIM == GRID_DIM -1
-            {
-                tile.0 = GroundCover::Grass;
-            }
+        let mut stoney_places = Vec::new();
+        stoney_places.push((result.rng.gen_range(0..GRID_DIM), result.rng.gen_range(0..GRID_DIM)));
+
+        for _ in 0..(((GRID_DIM * GRID_DIM) as f32 * 0.75) as usize) {
+            let dirs = [
+                (0,  1),
+                (0, -1),
+                ( 1, 0),
+                (-1, 0)
+            ];
+
+            let dir = dirs[result.rng.gen_range(0..dirs.len())];
+
+            let mut new = *(stoney_places.last().unwrap());
+            new.0 = (new.0 as i32 + dir.0).clamp(0, (GRID_DIM-1) as i32) as usize;
+            new.1 = (new.1 as i32 + dir.1).clamp(0, (GRID_DIM-1) as i32) as usize;
+
+            stoney_places.push(new);
         }
 
 
-        for tile in result.tiles.iter_mut().take(GRID_SIZE / 2) {
-            tile.1 = SoilType::Stony;
+        for (x, y) in stoney_places {
+            let index = tile_index!(x, y);
+            result.tiles.get_mut(index).unwrap().1 = SoilType::Stony;
         }
 
         // const NUM_INITIAL_TREES: usize = 30;
@@ -172,27 +182,14 @@ impl GameState {
         //     );
         // }
 
-        const NUM_INITIAL_TREES: usize = 10;
+        const NUM_INITIAL_TREES: usize = 20;
         let mut plant_locations = Vec::with_capacity(NUM_INITIAL_TREES * 2);
         for _ in 0..NUM_INITIAL_TREES {
             plant_locations.push(
                 WorldPosition {
                     coord: TileCoordinate {
                         x: result.rng.gen_range(0..GRID_DIM) as i32,
-                        y: (GRID_DIM / 3) as i32,
-                    },
-                    offset: TileOffset {
-                        x: result.rng.gen_range(0.0..1.0),
-                        y: result.rng.gen_range(0.0..1.0),
-                    },
-                }
-            );
-
-            plant_locations.push(
-                WorldPosition {
-                    coord: TileCoordinate {
-                        x: result.rng.gen_range(0..GRID_DIM) as i32,
-                        y: ((GRID_DIM / 3) * 2) as i32,
+                        y: result.rng.gen_range(0..GRID_DIM) as i32,
                     },
                     offset: TileOffset {
                         x: result.rng.gen_range(0.0..1.0),

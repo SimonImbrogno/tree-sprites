@@ -41,15 +41,7 @@ impl From<Camera> for CameraUniform {
             let near   =  0.0;
             let far    =  1.0;
 
-            // _LEFT HANDED_ ortho matrix: (2.0 / (far - near) has been negated vs right handed ortho.
-            let ortho = cgmath::Matrix4::new(
-                2.0 / (right - left),             0.0,                              0.0,                          0.0,
-                0.0,                              2.0 / (top - bottom),             0.0,                          0.0,
-                0.0,                              0.0,                              2.0 / (far - near),           0.0,
-                -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1.0,
-            );
-
-            OPENGL_TO_WGPU_MATRIX * ortho
+            ortho_matrix(left, right, bottom, top, near, far)
         };
 
         Self {
@@ -57,4 +49,58 @@ impl From<Camera> for CameraUniform {
             view_proj: vp_matrix.into(),
         }
     }
+}
+
+impl CameraUniform {
+    pub fn simple_canvas_ortho(x: u32, y: u32) -> Self {
+        let vp_matrix = {
+            let left   = 0.0;
+            let right  = x as f32;
+            let bottom = 0.0;
+            let top    = y as f32;
+            let near   = 0.0;
+            let far    = 1.0;
+
+            ortho_matrix(left, right, bottom, top, near, far)
+        };
+
+        let position = cgmath::Point3::new(0.0, 0.0, 0.0).to_homogeneous();
+
+        Self {
+            position: position.into(),
+            view_proj: vp_matrix.into(),
+        }
+    }
+
+    pub fn simple_top_down_canvas_ortho(x: u32, y: u32) -> Self {
+        let vp_matrix = {
+            let left   = 0.0;
+            let right  = x as f32;
+            let bottom = y as f32;
+            let top    = 0.0;
+            let near   = 0.0;
+            let far    = 1.0;
+
+            ortho_matrix(left, right, bottom, top, near, far)
+        };
+
+        let position = cgmath::Point3::new(0.0, 0.0, 0.0).to_homogeneous();
+
+        Self {
+            position: position.into(),
+            view_proj: vp_matrix.into(),
+        }
+    }
+}
+
+fn ortho_matrix(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> cgmath::Matrix4<f32> {
+    // _LEFT HANDED_ ortho matrix: (2.0 / (far - near) has been negated vs right handed ortho.
+    let ortho = cgmath::Matrix4::new(
+        2.0 / (right - left),             0.0,                              0.0,                          0.0,
+        0.0,                              2.0 / (top - bottom),             0.0,                          0.0,
+        0.0,                              0.0,                              2.0 / (far - near),           0.0,
+        -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1.0,
+    );
+
+    OPENGL_TO_WGPU_MATRIX * ortho
 }
