@@ -411,7 +411,7 @@ impl GameState {
         };
 
         let mut shade_factor = 1.0;
-        let radius = 1.0; //Something big... No tree is gonna be 2 tiles wide... probably.
+        let radius = 3.0; //Something big... No tree is gonna be 6 tiles wide... probably.
 
         for (near_tree_index, near_tree) in self.iter_trees_in_radius(tree_pos, radius) {
             if near_tree_index == tree_slot_index { continue; } // Skip the tree we're updating.

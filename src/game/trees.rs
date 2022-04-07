@@ -26,9 +26,9 @@ impl TreeSpecies {
 
     pub fn seed_success_rate(&self) -> SeedRate {
         match self {
-            Self::Ash        => SeedRate { average: 4.0, variation: 1.0},
-            Self::Fir        => SeedRate { average: 3.0, variation: 1.0},
-            Self::CottonWood => SeedRate { average: 16.0, variation: 3.0},
+            Self::Ash        => SeedRate { average: 40.0, variation: 10.0},
+            Self::Fir        => SeedRate { average: 30.0, variation: 10.0},
+            Self::CottonWood => SeedRate { average: 160.0, variation: 30.0},
         }
     }
 
@@ -44,8 +44,8 @@ impl TreeSpecies {
         match self {
             Self::Ash => match growth_stage {
                 TreeGrowthStage::Sapling => 0.55,
-                TreeGrowthStage::Mature => 0.9,
-                TreeGrowthStage::Old => 0.8,
+                TreeGrowthStage::Mature => 0.85,
+                TreeGrowthStage::Old => 0.9,
                 TreeGrowthStage::Decline => 0.55,
                 _ => 0.0,
             },
@@ -60,8 +60,8 @@ impl TreeSpecies {
             Self::CottonWood => match growth_stage {
                 TreeGrowthStage::Seedling => 0.25,
                 TreeGrowthStage::Sapling => 0.7,
-                TreeGrowthStage::Mature => 0.9,
-                TreeGrowthStage::Old => 0.9,
+                TreeGrowthStage::Mature => 1.0,
+                TreeGrowthStage::Old => 1.2,
                 TreeGrowthStage::Decline => 0.8,
                 _ => 0.0,
             },
