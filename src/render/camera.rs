@@ -39,7 +39,7 @@ impl From<Camera> for CameraUniform {
             let bottom = -y_radius + src.position.y;
             let top    =  y_radius + src.position.y;
             let near   =  0.0;
-            let far    =  1.0;
+            let far    =  100.0;
 
             ortho_matrix(left, right, bottom, top, near, far)
         };

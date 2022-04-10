@@ -37,5 +37,7 @@ fn main(in: VertexOutput) -> [[location(0)]] vec4<f32> {
     let texture_index: i32 = in.tex_index;
     var color = textureSample(texture, t_samlper, in.uv, texture_index);
 
+    if (color.a == 0.0) { discard; }
+
     return color;
 }

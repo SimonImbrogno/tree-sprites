@@ -3,6 +3,7 @@
 #![feature(variant_count)]
 #![allow(unused_parens)]
 
+use std::fmt::Debug;
 use std::time::Duration;
 
 use log::{debug, error};
@@ -10,10 +11,12 @@ use winit::event::*;
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-mod timer;
-mod render;
+mod debug;
 mod game;
+mod render;
+mod timer;
 
+use debug::DebugTimers;
 use game::game_state::{GameState, Input};
 use render::RenderState;
 use timer::{AverageDurationTimer, DurationTimer, TargetTimer, Timer, TimerState};
@@ -114,11 +117,10 @@ fn main() {
 
     let mut input = Input::default();
 
+    let mut dbgt = DebugTimers::new();
+
     // let running_timer = DurationTimer::new();
     let mut update_timer = TargetTimer::new(update_target_dt);
-
-    let mut avg_update_timer = AverageDurationTimer::<20>::new();
-    let mut avg_render_timer = AverageDurationTimer::<20>::new();
 
     let mut window_title_update_timer = TargetTimer::new(Duration::from_secs_f32(0.25));
 
@@ -144,6 +146,7 @@ fn main() {
                 accumulator += elapsed;
 
                 let mut count = 0;
+
                 while accumulator > update_target_dt {
                     count += 1;
 
@@ -153,8 +156,10 @@ fn main() {
                     input.dt = update_target_dt * 2;
                     input.t = sim_time;
 
-                    measure!(avg_update_timer, {
-                        game_state.update(&input);
+                    measure!(dbgt.long_avg_update_timer, {
+                        measure!(dbgt.avg_update_timer, {
+                            game_state.update(&input);
+                        });
                     });
                 }
 
@@ -162,10 +167,9 @@ fn main() {
                     debug!("+{} updates...", count);
                 }
 
-                measure!(avg_render_timer, {
-                    let render_result = render_state.try_render(&game_state);
-                    handle_render_result(render_result, &mut render_state, &window, control_flow);
-                });
+                // NOTE: Timing happens internally
+                let render_result = render_state.try_render(&game_state, &mut dbgt);
+                handle_render_result(render_result, &mut render_state, &window, control_flow);
 
                 let loop_time = loop_timer.elapsed();
                 loop_timer.reset();
@@ -175,8 +179,8 @@ fn main() {
 
                     let rps = 1.0 / loop_time.as_secs_f32();
 
-                    let avg_ut = avg_update_timer.average().as_micros();
-                    let avg_rt = avg_render_timer.average().as_micros();
+                    let avg_ut = dbgt.avg_update_timer.average().as_micros();
+                    let avg_rt = dbgt.avg_render_timer.average().as_micros();
                     let avg_total = avg_rt + avg_ut;
 
                     let ups_budget_usage   = (avg_ut as f32 / frame_target_dt.as_micros() as f32) * 100.0;

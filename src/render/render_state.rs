@@ -4,8 +4,10 @@ use std::time::Duration;
 use anyhow::Result;
 use env_logger::fmt::Color;
 use log::debug;
+use wgpu::StencilFaceState;
 use winit::window::Window;
 
+use crate::debug::DebugTimers;
 use crate::game::game_state::{self, GameState, GroundCover, SoilType};
 use crate::game::{TileType, self};
 use crate::timer::{AverageDurationTimer, TargetTimer, TimerState, Timer};
@@ -44,6 +46,9 @@ pub struct RenderState {
     tile_sprite_sheet: Texture,
     tile_sprite_sheet_bind_group: wgpu::BindGroup,
 
+    // This is wrapped in an options JUST so we can "take" it out of self and then use &mut self. Because the borrow checker is a pain.
+    depth_texture: Option<Texture>,
+
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
@@ -52,13 +57,9 @@ pub struct RenderState {
 
     clear_color: [f64; 3],
     tile_render_pipeline: wgpu::RenderPipeline,
+    entity_render_pipeline: wgpu::RenderPipeline,
     shadow_render_pipeline: wgpu::RenderPipeline,
     ui_render_pipeline: wgpu::RenderPipeline,
-
-    //Timers...
-    debug_log_timer: TargetTimer,
-    ground_render_timer: AverageDurationTimer<600>,
-    tree_render_timer: AverageDurationTimer<600>,
 }
 
 impl RenderState {
@@ -110,6 +111,9 @@ impl RenderState {
         let circle_shader = create_shader_module(&device, "render_state -> circle_shader", include_str!("../../res/shaders/circle_shader.wgsl"));
         let ui_shader = create_shader_module(&device, "render_state -> ui_shader", include_str!("../../res/shaders/debug_ui_shader.wgsl"));
 
+        debug!("Creating depth buffer...");
+        let depth_texture = Texture::create_depth_texture("render_state.depth_texture", &device, surface_config.width, surface_config.height);
+
         debug!("Loading textures...");
 
         let sprite_sheet_bytes = include_bytes!("../../res/textures/tile_sprite_sheet.png");
@@ -123,7 +127,7 @@ impl RenderState {
         let tile_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.tile_quad_buffer", 8000);
         let shadow_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.shadow_quad_buffer", 8000);
         let entity_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.entity_quad_buffer", 8000);
-        let ui_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.entity_quad_buffer", 2000);
+        let ui_quad_buffer = GeometryBuffer::new_with_quad_capacity(&device, "render_state.entity_quad_buffer", 8000);
 
         let camera = Camera {
             aspect_ratio: 1.0,
@@ -230,6 +234,14 @@ impl RenderState {
             let push_constant_ranges = [];
             let buffer_layouts = [TexturedVertex::describe_buffer()];
 
+            let depth_stencil = wgpu::DepthStencilState {
+                format: depth_texture.format,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            };
+
             create_render_pipeline(
                 &device,
                 label,
@@ -237,7 +249,34 @@ impl RenderState {
                 &push_constant_ranges,
                 &buffer_layouts,
                 surface_config.format,
-                &main_shader
+                &main_shader,
+                Some(depth_stencil)
+            )
+        };
+
+        let entity_render_pipeline = {
+            let label = "render_state.etity_render_pipeline";
+            let bind_group_layouts = [&camera_bind_group_layout, &tile_sprite_sheet_bind_group_layout];
+            let push_constant_ranges = [];
+            let buffer_layouts = [TexturedVertex::describe_buffer()];
+
+            let depth_stencil = wgpu::DepthStencilState {
+                format: depth_texture.format,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            };
+
+            create_render_pipeline(
+                &device,
+                label,
+                &bind_group_layouts,
+                &push_constant_ranges,
+                &buffer_layouts,
+                surface_config.format,
+                &main_shader,
+                Some(depth_stencil)
             )
         };
 
@@ -247,6 +286,14 @@ impl RenderState {
             let push_constant_ranges = [];
             let buffer_layouts = [UvVertex::describe_buffer()];
 
+            let depth_stencil = wgpu::DepthStencilState {
+                format: depth_texture.format,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            };
+
             create_render_pipeline(
                 &device,
                 label,
@@ -254,7 +301,8 @@ impl RenderState {
                 &push_constant_ranges,
                 &buffer_layouts,
                 surface_config.format,
-                &circle_shader
+                &circle_shader,
+                Some(depth_stencil)
             )
         };
 
@@ -264,6 +312,14 @@ impl RenderState {
             let push_constant_ranges = [];
             let buffer_layouts = [ColoredVertex::describe_buffer()];
 
+            let depth_stencil = wgpu::DepthStencilState {
+                format: depth_texture.format,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            };
+
             create_render_pipeline(
                 &device,
                 label,
@@ -271,7 +327,8 @@ impl RenderState {
                 &push_constant_ranges,
                 &buffer_layouts,
                 surface_config.format,
-                &ui_shader
+                &ui_shader,
+                Some(depth_stencil)
             )
         };
 
@@ -297,21 +354,20 @@ impl RenderState {
             tile_sprite_sheet,
             tile_sprite_sheet_bind_group,
 
+            depth_texture: Some(depth_texture),
+
             camera_buffer,
             camera_bind_group,
 
             ui_camera_buffer,
             ui_camera_bind_group,
 
-            //render_pipeline,
+            //render_pipelines,
             clear_color: [0.0, 0.0, 0.0],
             tile_render_pipeline,
+            entity_render_pipeline,
             shadow_render_pipeline,
             ui_render_pipeline,
-
-            debug_log_timer: TargetTimer::new(Duration::from_secs(1)),
-            ground_render_timer: AverageDurationTimer::new(),
-            tree_render_timer: AverageDurationTimer::new(),
         }
     }
 
@@ -322,96 +378,126 @@ impl RenderState {
             self.surface_config.width  = new_size.width;
             self.surface_config.height = new_size.height;
             self.surface.configure(&self.device, &self.surface_config);
+
+            self.depth_texture = Some(
+                Texture::create_depth_texture(
+                    "render_state.depth_texture",
+                    &self.device,
+                    self.surface_config.width,
+                    self.surface_config.height
+                )
+            );
         }
     }
 
-    pub fn try_render(&mut self, game_state: &GameState) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+    pub fn try_render(&mut self, game_state: &GameState, dbgt: &mut DebugTimers) -> Result<(), wgpu::SurfaceError> {
+        measure!(dbgt.long_avg_render_timer, {
+            measure!(dbgt.avg_render_timer, {
+                let output = self.surface.get_current_texture()?;
+                let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor {
-                label: Some("render_state -> encoder"),
-            }
-        );
+                let mut encoder = self.device.create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor {
+                        label: Some("render_state -> encoder"),
+                    }
+                );
 
-        let [r, g, b] = self.clear_color;
-        let render_pass_descriptor = wgpu::RenderPassDescriptor {
-            label: Some("render_state -> render_pass"),
-            color_attachments: &[
-                wgpu::RenderPassColorAttachment {
-                    view: &output_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
-                        store: true
-                    },
+                // Take depth texture our of self to appease borrow check.
+                let depth_texture = self.depth_texture.take().unwrap();
+
+                let [r, g, b] = self.clear_color;
+                let render_pass_descriptor = wgpu::RenderPassDescriptor {
+                    label: Some("render_state -> render_pass"),
+                    color_attachments: &[
+                        wgpu::RenderPassColorAttachment {
+                            view: &output_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                                store: true
+                            },
+                        }
+                    ],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_texture.view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: true
+                        }),
+                        stencil_ops: None
+                    }),
+                };
+
+                // TODO: this should probably be automatic?
+                self.tile_quad_buffer.reset();
+                self.shadow_quad_buffer.reset();
+                self.entity_quad_buffer.reset();
+                self.ui_quad_buffer.reset();
+
+                measure!(dbgt.ground_render_timer, {
+                    self.draw_ground(game_state);
+                });
+
+                self.draw_debug_grid(game_state);
+
+                measure!(dbgt.tree_render_timer, {
+                    self.draw_trees(game_state);
+                });
+
+                self.draw_debug_graphs(game_state, dbgt);
+
+                let mut render_pass = encoder.begin_render_pass(&render_pass_descriptor);
+
+                self.camera.update(&game_state.camera, self.window_size);
+                self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(self.camera)]));
+
+                self.queue.write_geometry_buffer(&mut self.tile_quad_buffer);
+                self.queue.write_geometry_buffer(&mut self.shadow_quad_buffer);
+                self.queue.write_geometry_buffer(&mut self.entity_quad_buffer);
+                self.queue.write_geometry_buffer(&mut self.ui_quad_buffer);
+
+                //Ground
+                render_pass.set_pipeline(&self.tile_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
+                render_pass.draw_geometry_buffer(&self.tile_quad_buffer);
+
+                //Shadows
+                render_pass.set_pipeline(&self.shadow_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.draw_geometry_buffer(&self.shadow_quad_buffer);
+
+                //Trees
+                render_pass.set_pipeline(&self.entity_render_pipeline);
+                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
+                render_pass.draw_geometry_buffer(&self.entity_quad_buffer);
+
+                let camera_uniform = CameraUniform::simple_canvas_ortho(self.window_size.width, self.window_size.height);
+                self.queue.write_buffer(&self.ui_camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+
+                render_pass.set_pipeline(&self.ui_render_pipeline);
+                render_pass.set_bind_group(0, &self.ui_camera_bind_group, &[]);
+                render_pass.draw_geometry_buffer(&self.ui_quad_buffer);
+
+                drop(render_pass);
+                self.queue.submit(std::iter::once(encoder.finish()));
+                output.present();
+
+                if let TimerState::Ready(_) = dbgt.debug_log_timer.check() {
+                    dbgt.debug_log_timer.reset();
+                    debug!(
+                        "Ground + Trees took : {:?} + {:?}",
+                        dbgt.ground_render_timer.average(),
+                        dbgt.tree_render_timer.average()
+                    );
                 }
-            ],
-            depth_stencil_attachment: None,
-        };
 
-        // TODO: this should probably be automatic?
-        self.tile_quad_buffer.reset();
-        self.shadow_quad_buffer.reset();
-        self.entity_quad_buffer.reset();
-        self.ui_quad_buffer.reset();
-
-        measure!(self.ground_render_timer, {
-            self.draw_ground(game_state);
+                // Replace depth texture in self now that we're done with it.
+                self.depth_texture = Some(depth_texture);
+            });
         });
 
-        self.draw_debug_grid(game_state);
-
-        measure!(self.tree_render_timer, {
-            self.draw_trees(game_state);
-        });
-
-        self.draw_debug_graphs(game_state);
-
-        let mut render_pass = encoder.begin_render_pass(&render_pass_descriptor);
-
-        self.camera.update(&game_state.camera, self.window_size);
-        self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[CameraUniform::from(self.camera)]));
-
-        self.queue.write_geometry_buffer(&mut self.tile_quad_buffer);
-        self.queue.write_geometry_buffer(&mut self.shadow_quad_buffer);
-        self.queue.write_geometry_buffer(&mut self.entity_quad_buffer);
-        self.queue.write_geometry_buffer(&mut self.ui_quad_buffer);
-
-        render_pass.set_pipeline(&self.tile_render_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
-        render_pass.draw_geometry_buffer(&self.tile_quad_buffer);
-
-        render_pass.set_pipeline(&self.shadow_render_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        render_pass.draw_geometry_buffer(&self.shadow_quad_buffer);
-
-        render_pass.set_pipeline(&self.tile_render_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.tile_sprite_sheet_bind_group, &[]);
-        render_pass.draw_geometry_buffer(&self.entity_quad_buffer);
-
-        let camera_uniform = CameraUniform::simple_canvas_ortho(self.window_size.width, self.window_size.height);
-        self.queue.write_buffer(&self.ui_camera_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
-
-        render_pass.set_pipeline(&self.ui_render_pipeline);
-        render_pass.set_bind_group(0, &self.ui_camera_bind_group, &[]);
-        render_pass.draw_geometry_buffer(&self.ui_quad_buffer);
-
-        drop(render_pass);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-
-        if let TimerState::Ready(_) = self.debug_log_timer.check() {
-            self.debug_log_timer.reset();
-            debug!(
-                "Ground + Trees took : {:?} + {:?}",
-                self.ground_render_timer.average(),
-                self.tree_render_timer.average()
-            );
-        }
 
         Ok(())
     }
@@ -622,17 +708,16 @@ impl RenderState {
 
                 let x = (tile_index % GRID_DIM) as f32 * TILE_DIM - (TILE_RAD) + (TILE_DIM * tree.position.offset.x);
                 let y = (tile_index / GRID_DIM) as f32 * TILE_DIM              + (TILE_DIM * tree.position.offset.y);
+                let z = y;
 
                 let tex_index = self.sprite_sheet.get_texture_index(TileType::from(tree)) as i32;
                 let shadow_radius = tree.species.shadow_radius(tree.stage);
 
-                trees_to_render.push((x, y, tex_index, shadow_radius, do_hacky_shadow_offset));
+                trees_to_render.push((x, y, z, tex_index, shadow_radius, do_hacky_shadow_offset));
             }
         }
 
-        trees_to_render.sort_unstable_by(|(_, a, ..), (_, b, ..)| b.partial_cmp(a).unwrap());
-
-        for &(x, y, _, shadow_rad, do_hacky_shadow_offset) in trees_to_render.iter() {
+        for &(x, y, _, _, shadow_rad, do_hacky_shadow_offset) in trees_to_render.iter() {
             let dim_x = TILE_DIM * shadow_rad;
             let dim_y = TILE_DIM * shadow_rad * 0.25 ;
 
@@ -651,9 +736,9 @@ impl RenderState {
             self.shadow_quad_buffer.push_quad(quad);
         }
 
-        for &(x, y, tex_index, ..) in trees_to_render.iter() {
+        for &(x, y, z, tex_index, ..) in trees_to_render.iter() {
             let quad = TexturedQuad {
-                pos: (x, y),
+                pos: (x, y, z),
                 dim: (TILE_DIM, TILE_DIM),
                 tex_index
             };
@@ -685,7 +770,7 @@ impl RenderState {
                     if tile_y == -1 || tile_y == MAX_XY { dim_y *= 0.5; }
 
                     let quad = TexturedQuad {
-                        pos: (x, y),
+                        pos: (x, y, 0.0),
                         dim: (dim_x, dim_y),
                         tex_index: self.sprite_sheet.get_texture_index(TileType::GridLine) as i32,
                     };
@@ -703,7 +788,7 @@ impl RenderState {
                     let y = ((tile_y as f32) * TILE_DIM);
 
                     let quad = TexturedQuad {
-                        pos: (x, y),
+                        pos: (x, y, 0.0),
                         dim: (TILE_DIM, TILE_DIM),
                         tex_index: self.sprite_sheet.get_texture_index(TileType::GridLine) as i32,
                     };
@@ -714,7 +799,7 @@ impl RenderState {
         }
     }
 
-    fn draw_debug_graphs(&mut self, game_state: &GameState) {
+    fn draw_debug_graphs(&mut self, game_state: &GameState, dbgt: &DebugTimers) {
         const WIDGET_WIDTH: i32 = 240;
         const WIDGET_HEIGHT: i32 = 20;
         const SPACER_HEIGHT: i32 = 5;
@@ -779,11 +864,13 @@ impl RenderState {
             new_baseline
         };
 
-        let add_plot = |baseline, min: f32, max: f32, data: &[Duration], quads: &mut Vec<_>| -> i32 {
+        let add_plot = |baseline, min: f32, max: f32, data: &[((f32, f32, f32), &[Duration])], quads: &mut Vec<_>| -> i32 {
+            debug_assert!(data.len() > 0);
+            debug_assert!(data.iter().all(|(_, sub)| sub.len() == data.get(0).unwrap().1.len()));
+
             const PLOT_HEIGHT: i32 = WIDGET_HEIGHT * 4;
             let new_baseline = baseline - PLOT_HEIGHT;
             let y_pos = new_baseline as f32;
-
 
             quads.push(
                 ColoredQuad {
@@ -793,30 +880,44 @@ impl RenderState {
                 }.into()
             );
 
-            let perc = data.iter().map(|d| (d.as_micros() as f32 - min).max(0.0) / (max - min));
-            let perc2 = perc.clone();
+            for index in 0..(data.get(0).unwrap().1.len() - 1) {
+                let mut y_base_left = y_pos;
+                let mut y_base_right = y_pos;
 
-            // A little janky when the grah contains more samples than pixels, ignore for now.
-            let quad_width = WIDGET_WIDTH as f32 / (data.len() as i32 - 1).max(1) as f32;
+                for (data_color, sub_data) in data.iter() {
+                    let val      = sub_data.get(index).unwrap();
+                    let next_val = sub_data.get(index + 1).unwrap();
 
-            for (index, (first, second)) in perc.zip(perc2.skip(1)).enumerate() {
-                let f_height = first * PLOT_HEIGHT as f32;
-                let s_height = second * PLOT_HEIGHT as f32;
+                    let first  = (val.as_micros()      as f32 - min).max(0.0) / (max - min);
+                    let second = (next_val.as_micros() as f32 - min).max(0.0) / (max - min);
 
-                let x_min = (index as f32 * quad_width) + 5.0;
-                let x_max = x_min + quad_width;
-                let y_min = y_pos;
-                let y_max_left = (y_min + f_height).min((new_baseline + PLOT_HEIGHT) as f32);
-                let y_max_right = (y_min + s_height).min((new_baseline + PLOT_HEIGHT) as f32);
+                    // A little janky when the grah contains more samples than pixels, ignore for now.
+                    let quad_width = WIDGET_WIDTH as f32 / (sub_data.len() as i32 - 1).max(1) as f32;
 
-                quads.push(
-                    [
-                        ColoredVertex { position: [x_max, y_max_right, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-                        ColoredVertex { position: [x_min, y_max_left,  0.0], color: [1.0, 1.0, 1.0, 1.0] },
-                        ColoredVertex { position: [x_min, y_min,       0.0], color: [1.0, 1.0, 1.0, 1.0] },
-                        ColoredVertex { position: [x_max, y_min,       0.0], color: [1.0, 1.0, 1.0, 1.0] },
-                    ]
-                );
+                    let f_height = first * PLOT_HEIGHT as f32;
+                    let s_height = second * PLOT_HEIGHT as f32;
+
+                    let x_min = (index as f32 * quad_width) + 5.0;
+                    let x_max = x_min + quad_width;
+                    let y_min_left  = y_base_left;
+                    let y_min_right = y_base_right;
+                    let y_max_left  = (y_min_left + f_height).min((new_baseline + PLOT_HEIGHT) as f32);
+                    let y_max_right = (y_min_right + s_height).min((new_baseline + PLOT_HEIGHT) as f32);
+
+                    let color = [data_color.0, data_color.1, data_color.2, 1.0];
+
+                    quads.push(
+                        [
+                            ColoredVertex { position: [x_max, y_max_right, 0.0], color },
+                            ColoredVertex { position: [x_min, y_max_left,  0.0], color },
+                            ColoredVertex { position: [x_min, y_min_left,  0.0], color },
+                            ColoredVertex { position: [x_max, y_min_right, 0.0], color },
+                        ]
+                    );
+
+                    // y_base_left = y_max_left;
+                    // y_base_right = y_max_right;
+                }
             }
 
             new_baseline
@@ -824,13 +925,17 @@ impl RenderState {
 
         let frame_budget = 8333.0; //micros, janky, hardcoded.
 
+        let update_times = dbgt.long_avg_update_timer.measurements();
+        let render_times = dbgt.long_avg_render_timer.measurements();
+
         baseline = add_spacer(baseline);
-        baseline = add_plot(baseline, 0.0, frame_budget, self.ground_render_timer.measurements(), &mut quads);
+        baseline = add_plot(baseline, 0.0, frame_budget, &[((0.8, 0.5, 0.5), &render_times), ((0.5, 0.5, 0.8), &update_times)], &mut quads);
+        baseline = add_spacer(baseline);
+        baseline = add_plot(baseline, 0.0, frame_budget, &[((0.5, 0.5, 0.8), &update_times)], &mut quads);
+
         baseline = add_spacer(baseline);
         baseline = add_buffer_usage_meter(baseline, (&self.tile_quad_buffer).into(), &mut quads);
 
-        baseline = add_spacer(baseline);
-        baseline = add_plot(baseline, 0.0, frame_budget, self.tree_render_timer.measurements(), &mut quads);
         baseline = add_spacer(baseline);
         baseline = add_buffer_usage_meter(baseline, (&self.shadow_quad_buffer).into(), &mut quads);
         baseline = add_spacer(baseline);

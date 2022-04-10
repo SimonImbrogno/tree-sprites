@@ -51,7 +51,8 @@ pub mod gpu {
         push_constant_ranges: &[wgpu::PushConstantRange],
         buffer_layouts: &[wgpu::VertexBufferLayout],
         fragment_color_format: wgpu::TextureFormat,
-        shader_module: &wgpu::ShaderModule
+        shader_module: &wgpu::ShaderModule,
+        depth_stencil: Option<wgpu::DepthStencilState>
     ) -> wgpu::RenderPipeline {
         let layout_label = &(String::from(label) + " -> layout");
 
@@ -99,14 +100,8 @@ pub mod gpu {
                 vertex: vertex_state,
                 fragment: Some(fragment_state),
                 primitive: primitive_state,
-                depth_stencil: None,
-                // depth_stencil: Some(wgpu::DepthStencilState {
-                //     format: todo!(),
-                //     depth_write_enabled: todo!(),
-                //     depth_compare: todo!(),
-                //     stencil: todo!(),
-                //     bias: todo!(),
-                // })),
+                // depth_stencil: None,
+                depth_stencil,
                 multisample: wgpu::MultisampleState {
                     count: 1,
                     mask: !0,
