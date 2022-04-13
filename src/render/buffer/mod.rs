@@ -1,10 +1,8 @@
 use std::ops::Add;
 
 mod geometry_buffer;
-mod quad_buffer;
 
 pub use geometry_buffer::GeometryBuffer;
-pub use quad_buffer::QuadBuffer;
 use super::vertex::Vertex;
 
 pub trait Buffer {
