@@ -2,20 +2,18 @@ use std::mem::size_of;
 use std::time::Duration;
 
 use anyhow::Result;
-use env_logger::fmt::Color;
 use log::debug;
-use wgpu::StencilFaceState;
 use winit::window::Window;
 
 use crate::debug::DebugTimers;
 use crate::game::game_state::{self, GameState, GroundCover, SoilType};
 use crate::game::{TileType, self};
-use crate::timer::{AverageDurationTimer, TargetTimer, TimerState, Timer};
+use crate::timer::{TimerState, Timer};
 use crate::timer::measure;
 
 use super::debug_ui::BufferUsageMeter;
 
-use super::buffer::{Buffer, ViewableBuffer, GeometryBuffer, DrawGeometryBuffer, WriteGeometryBuffer};
+use super::buffer::{Buffer, GeometryBuffer, DrawGeometryBuffer, WriteGeometryBuffer};
 use super::buffer_usages::BufferUsages;
 use super::camera::{Camera, CameraUniform};
 use super::quad::{TexturedQuad, TexturedUvQuad, UntexturedQuad, ColoredQuad};

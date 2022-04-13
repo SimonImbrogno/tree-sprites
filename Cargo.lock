@@ -1524,7 +1524,6 @@ name = "tree_sprites"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bumpalo",
  "bytemuck",
  "cgmath",
  "env_logger",

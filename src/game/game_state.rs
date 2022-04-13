@@ -1,20 +1,14 @@
 #![macro_use]
 
-use std::ops::{Index, IndexMut};
-use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 use std::mem::MaybeUninit;
 
-use bumpalo::Bump;
-use cgmath::Relative;
-use log::debug;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 
 use crate::timer::{AverageDurationTimer, TargetTimer};
 use crate::timer::measure;
 
-use super::tiles::TileType;
 use super::position::{WorldPosition, TileOffset, TileCoordinate};
 use super::trees::{Tree, TreeGrowthStage, TreeSpecies};
 use super::tree_region_iterator::{TreeRegionIterator, TreeRegionIteratorMut};
